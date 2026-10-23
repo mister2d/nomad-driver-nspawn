@@ -135,3 +135,35 @@ func TestFleetCredentialsRenderedInArgs(t *testing.T) {
 		t.Error("credential argument missing")
 	}
 }
+
+func TestFleetCredentialsSetArgs(t *testing.T) {
+	args, err := fleetSetCredentialArgs(map[string]string{"motd": "hi:there", "agent.name": "a1"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(args) != 2 || args[0] != "--set-credential=agent.name:a1" || args[1] != "--set-credential=motd:hi:there" {
+		t.Fatalf("got %v", args)
+	}
+	for _, id := range []string{"db.password", "API_TOKEN", "ssh.authorized_keys.root", "tls.cert", ".x", ""} {
+		if _, err := fleetSetCredentialArgs(map[string]string{id: "v"}, nil); err == nil {
+			t.Errorf("%q accepted", id)
+		}
+	}
+	if _, err := fleetSetCredentialArgs(map[string]string{"dup": "v"}, map[string]string{"dup": "secrets/x"}); err == nil {
+		t.Error("duplicate ID accepted")
+	}
+}
+
+func TestFleetCredentialsRedaction(t *testing.T) {
+	in := []string{"-D", "/img", "--set-credential=motd:s3cret:x", "--load-credential=a:/p"}
+	out := fleetRedactArgs(in)
+	if strings.Contains(strings.Join(out, " "), "s3cret") {
+		t.Fatalf("value leaked: %v", out)
+	}
+	if out[2] != "--set-credential=motd:<redacted>" || out[3] != in[3] {
+		t.Fatalf("got %v", out)
+	}
+	if in[2] != "--set-credential=motd:s3cret:x" {
+		t.Error("input modified")
+	}
+}

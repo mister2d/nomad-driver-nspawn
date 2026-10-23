@@ -113,3 +113,47 @@ func fleetLoadCredentialArgs(taskDir string, roots []string, creds map[string]st
 	}
 	return args, nil
 }
+
+// fleetSecretIDRe flags IDs that suggest secret content. set_credentials
+// values appear in the host process table, so such IDs must use a file.
+var fleetSecretIDRe = regexp.MustCompile(`(?i)(pass|secret|token|key|private|cert)`)
+
+// fleetSetCredentialArgs validates set_credentials entries and returns the
+// --set-credential arguments in sorted ID order. IDs that overlap with
+// load_credentials are refused.
+func fleetSetCredentialArgs(creds, loaded map[string]string) ([]string, error) {
+	ids := make([]string, 0, len(creds))
+	for id := range creds {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	args := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if err := fleetValidateCredentialID(id); err != nil {
+			return nil, err
+		}
+		if _, dup := loaded[id]; dup {
+			return nil, fmt.Errorf("credential %q is in both load_credentials and set_credentials", id)
+		}
+		if fleetSecretIDRe.MatchString(id) {
+			return nil, fmt.Errorf("set_credentials %q looks like secret data, use load_credentials with a file in secrets/", id)
+		}
+		args = append(args, "--set-credential="+id+":"+creds[id])
+	}
+	return args, nil
+}
+
+// fleetRedactArgs returns a copy of args with --set-credential values hidden,
+// for logging.
+func fleetRedactArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		if strings.HasPrefix(a, "--set-credential=") {
+			if j := strings.Index(a, ":"); j >= 0 {
+				a = a[:j+1] + "<redacted>"
+			}
+		}
+		out[i] = a
+	}
+	return out
+}

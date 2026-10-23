@@ -79,6 +79,7 @@ var (
 		"ephemeral":        hclspec.NewAttr("ephemeral", "bool", false),
 		"tasks_max":        hclspec.NewAttr("tasks_max", "number", false),
 		"load_credentials": hclspec.NewAttr("load_credentials", "list(map(string))", false),
+		"set_credentials":  hclspec.NewAttr("set_credentials", "list(map(string))", false),
 		"cpu_hard_limit": hclspec.NewDefault(
 			hclspec.NewAttr("cpu_hard_limit", "bool", false),
 			hclspec.NewLiteral("false"),
@@ -534,7 +535,11 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to validate credentials: %v", err)
 	}
-	driverConfig.loadCredentialArgs = credArgs
+	setArgs, err := fleetSetCredentialArgs(driverConfig.SetCredentials, driverConfig.LoadCredentials)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to validate credentials: %v", err)
+	}
+	driverConfig.loadCredentialArgs = append(credArgs, setArgs...)
 
 	// Validate config
 	if err := driverConfig.Validate(); err != nil {
@@ -578,9 +583,13 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		return nil, nil, err
 	}
 
-	d.logger.Debug("starting nspawn task", "driver_cfg", hclog.Fmt("%+v", driverConfig))
+	// The dump omits set_credentials values, which are visible in the process table.
+	logCfg := driverConfig
+	logCfg.SetCredentials = nil
+	logCfg.loadCredentialArgs = fleetRedactArgs(logCfg.loadCredentialArgs)
+	d.logger.Debug("starting nspawn task", "driver_cfg", hclog.Fmt("%+v", &logCfg))
 	d.logger.Debug("resources", "nomad", fmt.Sprintf("%+v", cfg.Resources.NomadResources), "linux", fmt.Sprintf("%+v", cfg.Resources.LinuxResources), "ports", fmt.Sprintf("%+v", cfg.Resources.Ports))
-	d.logger.Debug("commad arguments", "args", args)
+	d.logger.Debug("commad arguments", "args", fleetRedactArgs(args))
 
 	executorConfig := &executor.ExecutorConfig{
 		LogFile:  filepath.Join(cfg.TaskDir().Dir, "executor.out"),

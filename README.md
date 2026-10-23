@@ -192,6 +192,22 @@ should cover a broad range of use cases:
   sshd-generator and tmpfiles support the `ssh.authorized_keys.<user>`
   credential, which installs keys for that user without changes to the image.
   Check that PID 1 inside the image supports the credential you use.
+* `set_credentials` - (Optional) Map of credential ID to a literal value, passed
+  as `--set-credential=ID:VALUE`. **The value is visible in the host process
+  table and in `/proc/<pid>/cmdline`.** Use it only for non-secret data such as
+  a hostname or a flag. The driver refuses IDs that contain `pass`, `secret`,
+  `token`, `key`, `private` or `cert` (case-insensitive). Use `load_credentials`
+  with a file in `secrets/` for those. An ID cannot appear in both maps. The
+  driver hides these values in its own debug log.
+
+  ```hcl
+  config {
+    set_credentials = {
+      "agent.role" = "reviewer"
+    }
+  }
+  ```
+
 * [`capability`](https://www.freedesktop.org/software/systemd/man/systemd-nspawn.html#--capability=) -
   (Optional) List of additional capabilities to grant the container.
 

@@ -93,6 +93,7 @@ type MachineConfig struct {
 	ProcessTwo            bool               `codec:"process_two"`
 	Properties            hclutils.MapStrStr `codec:"properties"`
 	LoadCredentials       hclutils.MapStrStr `codec:"load_credentials"`
+	SetCredentials        hclutils.MapStrStr `codec:"set_credentials"`
 	// loadCredentialArgs holds validated arguments built by StartTask.
 	loadCredentialArgs []string
 	ReadOnly           bool   `codec:"read_only"`
