@@ -34,11 +34,25 @@ func TestFleetExecEnvCommandOrder(t *testing.T) {
 		t.Fatalf("bad prefix %v", got)
 	}
 	n := len(got)
-	if got[n-2] != "ls" || got[n-1] != "-l" || !strings.HasPrefix(got[n-3], "--setenv=") {
+	if got[n-3] != "/usr/bin/env" || got[n-2] != "ls" || got[n-1] != "-l" || !strings.HasPrefix(got[n-4], "--setenv=") {
 		t.Fatalf("bad order %v", got)
 	}
 	pty := fleetExecCommand("m", []string{"sh"}, true, nil)
 	if pty[7] != "--pty" || pty[8] != "--send-sighup" {
 		t.Fatalf("bad pty %v", pty)
+	}
+}
+
+func TestFleetResolveCommand(t *testing.T) {
+	cases := []struct{ in, want []string }{
+		{[]string{"sh", "-c", "id"}, []string{"/usr/bin/env", "sh", "-c", "id"}},
+		{[]string{"/run/current-system/sw/bin/sh"}, []string{"/run/current-system/sw/bin/sh"}},
+		{[]string{"./tool"}, []string{"./tool"}},
+		{nil, nil},
+	}
+	for _, c := range cases {
+		if got := fleetResolveCommand(c.in); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("fleetResolveCommand(%v) = %v, want %v", c.in, got, c.want)
+		}
 	}
 }

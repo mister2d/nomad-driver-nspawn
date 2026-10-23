@@ -1,5 +1,7 @@
 package nspawn
 
+import "strings"
+
 // fleetDefaultExecPath lists NixOS locations first. The classic locations
 // follow, so Debian and Alpine images resolve commands too. Missing
 // directories in PATH are harmless.
@@ -47,7 +49,18 @@ func fleetExecCommand(machine string, command []string, tty bool, taskEnv map[st
 	for _, e := range fleetExecEnv(taskEnv, tty) {
 		cmd = append(cmd, "--setenv="+e)
 	}
-	return append(cmd, command...)
+	return append(cmd, fleetResolveCommand(command)...)
+}
+
+// fleetResolveCommand prefixes a bare command name with /usr/bin/env. systemd-run resolves a
+// relative executable in systemd's fixed search path (/usr/local/sbin:/usr/local/bin:/usr/sbin:
+// /usr/bin), not in the --setenv PATH. On NixOS that path holds only env, so `sh` failed with
+// exit status 203 (EXEC). env then searches the --setenv PATH. A command with a slash is kept.
+func fleetResolveCommand(command []string) []string {
+	if len(command) == 0 || strings.Contains(command[0], "/") {
+		return command
+	}
+	return append([]string{"/usr/bin/env"}, command...)
 }
 
 // fleetTaskEnv returns the environment of the task config. It returns nil
