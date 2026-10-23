@@ -23,7 +23,7 @@ constraint {
 plugin "nspawn" {
   config {
     cpu_hard_limit    = false  # true: apply CPUQuota to every task
-    default_tasks_max = 0      # 0: keep the systemd default
+    default_tasks_max = 0      # 0: keep the systemd default. Above 0: default and ceiling
   }
 }
 ```
@@ -34,7 +34,7 @@ plugin "nspawn" {
 |---|---|---|
 | `port_map` | list(map(number)) | In bridge mode the host port comes from `NOMAD_HOST_PORT_<label>`. The driver passes no `--port` when a network namespace is used. Nomad CNI portmap does the forwarding. |
 | `cpu_hard_limit` | bool | Sets `CPUQuota` on the machine scope from the task CPU limit. Needs Nomad to send a CPU quota or percent value for this driver. |
-| `tasks_max` | number | Sets `TasksMax` on the scope. Wins over `default_tasks_max`. 0 keeps the default. A negative value fails the start. |
+| `tasks_max` | number | Sets `TasksMax` on the scope. A lower value wins over `default_tasks_max`. A higher value is reduced to `default_tasks_max` when that option is above 0. 0 uses the default. A negative value fails the start. |
 | `load_credentials` | list(map(string)) | `ID = "path"` becomes `--load-credential`. The file must be a regular file in the task `local/` or `secrets/` directory. |
 | `set_credentials` | list(map(string)) | `ID = "value"` becomes `--set-credential`. The value is visible in `ps`. IDs with pass, secret, token, key, private or cert are refused. |
 

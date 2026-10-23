@@ -180,6 +180,7 @@ type Config struct {
 	// CPUHardLimit forces the CPUQuota cap for every task.
 	CPUHardLimit bool `codec:"cpu_hard_limit"`
 	// DefaultTasksMax is the TasksMax value for tasks without tasks_max.
+	// When above 0 it is also the ceiling for tasks_max.
 	// 0 leaves the systemd default.
 	DefaultTasksMax int64 `codec:"default_tasks_max"`
 }

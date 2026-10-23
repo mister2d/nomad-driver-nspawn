@@ -11,7 +11,10 @@ func TestFleetTasksMaxPrecedence(t *testing.T) {
 		{"unset", 0, 0, ""},
 		{"default only", 0, 4096, "4096"},
 		{"task only", 512, 0, "512"},
-		{"task wins", 512, 4096, "512"},
+		{"lower task wins", 512, 4096, "512"},
+		{"task above ceiling is capped", 4000000, 4096, "4096"},
+		{"task equal to ceiling", 4096, 4096, "4096"},
+		{"no ceiling when default is 0", 4000000, 0, "4000000"},
 	}
 	for _, c := range cases {
 		props := map[string]string{}

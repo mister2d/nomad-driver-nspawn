@@ -108,13 +108,16 @@ func fleetResourceProperties(props map[string]string, in fleetResourceInput) ([]
 		set = append(set, k)
 	}
 
-	// The task option wins over the plugin default. 0 leaves the systemd
-	// default (30000 on this fleet) in place.
+	// A task value of 0 uses the plugin default. A plugin default above 0
+	// is also a ceiling, so a job cannot lift the operator limit. When both
+	// are 0 the systemd default (30000 on this fleet) stays in place.
 	if in.TasksMax < 0 || in.DefaultTasksMax < 0 {
 		return set, fmt.Errorf("tasks_max must not be negative")
 	}
 	tasks := in.TasksMax
 	if tasks == 0 {
+		tasks = in.DefaultTasksMax
+	} else if in.DefaultTasksMax > 0 && tasks > in.DefaultTasksMax {
 		tasks = in.DefaultTasksMax
 	}
 	if tasks > 0 {
