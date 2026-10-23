@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,6 +73,7 @@ type MachineConfig struct {
 	Capability       []string           `codec:"capability"`
 	Command          []string           `codec:"command"`
 	Console          string             `codec:"console"`
+	CPUHardLimit     bool               `codec:"cpu_hard_limit"`
 	Environment      hclutils.MapStrStr `codec:"environment"`
 	Ephemeral        bool               `codec:"ephemeral"`
 	Image            string             `codec:"image"`
@@ -202,8 +204,13 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 			args = append(args, "-p", v)
 		}
 	}
-	for k, v := range c.Properties {
-		args = append(args, "--property="+k+"="+v)
+	propKeys := make([]string, 0, len(c.Properties))
+	for k := range c.Properties {
+		propKeys = append(propKeys, k)
+	}
+	sort.Strings(propKeys)
+	for _, k := range propKeys {
+		args = append(args, "--property="+k+"="+c.Properties[k])
 	}
 	if len(c.Capability) > 0 {
 		args = append(args, "--capability", strings.Join(c.Capability, ","))

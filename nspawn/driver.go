@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -60,6 +59,10 @@ var (
 			hclspec.NewAttr("volumes", "bool", false),
 			hclspec.NewLiteral("true"),
 		),
+		"cpu_hard_limit": hclspec.NewDefault(
+			hclspec.NewAttr("cpu_hard_limit", "bool", false),
+			hclspec.NewLiteral("false"),
+		),
 	})
 
 	// taskConfigSpec is the hcl specification for the driver config section of
@@ -70,6 +73,10 @@ var (
 			hclspec.NewLiteral("true"),
 		),
 		"ephemeral": hclspec.NewAttr("ephemeral", "bool", false),
+		"cpu_hard_limit": hclspec.NewDefault(
+			hclspec.NewAttr("cpu_hard_limit", "bool", false),
+			hclspec.NewLiteral("false"),
+		),
 		"network_veth": hclspec.NewDefault(
 			hclspec.NewAttr("network_veth", "bool", false),
 			hclspec.NewLiteral("true"),
@@ -163,6 +170,8 @@ type Config struct {
 	// Enabled is set to true to enable the nspawn driver
 	Enabled bool `codec:"enabled"`
 	Volumes bool `codec:"volumes"`
+	// CPUHardLimit forces the CPUQuota cap for every task.
+	CPUHardLimit bool `codec:"cpu_hard_limit"`
 }
 
 // TaskState is the state which is encoded in the handle returned in
@@ -410,13 +419,17 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		driverConfig.Properties = make(hclutils.MapStrStr)
 	}
 
-	if cfg.Resources.NomadResources != nil {
-		if cfg.Resources.NomadResources.Memory.MemoryMaxMB != 0 {
-			driverConfig.Properties["MemoryHigh"] = strconv.Itoa(int(cfg.Resources.NomadResources.Memory.MemoryMB * 1024 * 1024))
-			driverConfig.Properties["MemoryMax"] = strconv.Itoa(int(cfg.Resources.NomadResources.Memory.MemoryMaxMB * 1024 * 1024))
-		} else {
-			driverConfig.Properties["MemoryMax"] = strconv.Itoa(int(cfg.Resources.NomadResources.Memory.MemoryMB * 1024 * 1024))
-		}
+	if _, err := fleetResourceProperties(driverConfig.Properties, fleetResourceInput{
+		Resources:         cfg.Resources,
+		CPUHardLimit:      driverConfig.CPUHardLimit,
+		ForceCPUHardLimit: d.config != nil && d.config.CPUHardLimit,
+	}); err != nil {
+		return nil, nil, err
+	}
+	if cfg.Resources != nil && cfg.Resources.LinuxResources != nil {
+		lr := cfg.Resources.LinuxResources
+		d.logger.Debug("cpu resources", "cpu_shares", lr.CPUShares, "cpuset", lr.CpusetCpus,
+			"cpu_quota", lr.CPUQuota, "cpu_period", lr.CPUPeriod, "percent_ticks", lr.PercentTicks)
 	}
 
 	// Setup port mapping and exposed ports
