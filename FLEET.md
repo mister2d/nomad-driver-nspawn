@@ -47,6 +47,40 @@ plugin "nomad-driver-nspawn" {
 | `tasks_max` | number | Sets `TasksMax` on the scope. A lower value wins over `default_tasks_max`. A higher value is reduced to `default_tasks_max` when that option is above 0. 0 uses the default. A negative value fails the start. |
 | `load_credentials` | list(map(string)) | `ID = "path"` becomes `--load-credential`. The file must be a regular file in the task `local/` or `secrets/` directory. |
 | `set_credentials` | list(map(string)) | `ID = "value"` becomes `--set-credential`. The value is visible in `ps`. IDs with pass, secret, token, key, private or cert are refused. |
+| `root_mode` | string | `image` (default) runs the image as the root. `store` runs a NixOS image from its store only. See "Store root mode". |
+| `toplevel` | string | Store mode only. The `/nix/store/<name>` toplevel to run. The default follows `/nix/var/nix/profiles/system` inside the image. |
+| `root_size` | string | Store mode only. Size of the tmpfs root, for example `256m` (default) or `1g`. |
+| `unprivileged_port_start` | number | Sets `net.ipv4.ip_unprivileged_port_start` in the group network namespace before start. -1 (default) leaves it. Needs bridge or cni networking. Use 0 to let sshd bind port 22 from inside a user namespace. |
+
+## Store root mode
+
+`root_mode = "store"` gives each machine its own user namespace on a shared
+image, also on CephFS. The driver does this:
+
+1. It mounts a tmpfs at `<task dir>/nspawn-root` and creates a small skeleton
+   (`etc`, `var/lib`, `usr/bin`, `bin`, `root`, `tmp`, `nix/var/nix`).
+2. It runs `systemd-nspawn -D <tmpfs> --bind-ro=<image>/nix/store:/nix/store:idmap
+   --kill-signal=SIGRTMIN+3 <toplevel>/init`. There is no `--boot` and no
+   `--volatile`.
+3. It unmounts the tmpfs in DestroyTask, or when the start fails.
+
+Why: with `--volatile=overlay`, nspawn mounts the overlay first and then tries
+to idmap it. Linux overlayfs has no `FS_ALLOW_IDMAP`, so the start fails with
+`Failed to change mount attributes: Invalid argument`. Store mode uses no
+overlay. The store is idmapped, which CephFS, ext4 and tmpfs support.
+
+Rules in store mode:
+
+* `private_users_ownership` is `map`. `auto` is refused, because it falls back
+  to a recursive chown when idmap fails.
+* `ephemeral`, `volatile`, `read_only`, `process_two`, `command` and
+  `image_download` are refused. `boot` is ignored.
+* User namespacing stays on with a group network namespace (bridge, Connect).
+  Image mode still turns it off there, as upstream does. The machine cannot
+  change links in a namespace that Nomad owns. Raw sockets (ping) fail.
+* Machine writes go to the tmpfs and count against the machine memory limit.
+
+The image should be a NixOS container system (`boot.isContainer = true`).
 
 Always applied, without options:
 
@@ -90,11 +124,11 @@ job "sandbox" {
       }
 
       config {
-        image            = "/var/lib/machines/sandbox"
-        boot             = true
-        volatile         = "overlay"
-        resolv_conf      = "copy-uplink"
-        port_map         = { ssh = 22 }
+        image                   = "/var/lib/machines/sandbox"
+        root_mode               = "store"
+        unprivileged_port_start = 0
+        resolv_conf             = "copy-uplink"
+        port_map                = { ssh = 22 }
         cpu_hard_limit   = true
         tasks_max        = 4096
         load_credentials = {

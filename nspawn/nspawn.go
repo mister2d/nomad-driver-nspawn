@@ -97,13 +97,22 @@ type MachineConfig struct {
 	// loadCredentialArgs holds validated arguments built by StartTask.
 	loadCredentialArgs []string
 	ReadOnly           bool   `codec:"read_only"`
-	TasksMax           int64  `codec:"tasks_max"`
-	ResolvConf         string `codec:"resolv_conf"`
-	User               string `codec:"user"`
-	UserNamespacing    bool   `codec:"user_namespacing"`
-	Volatile           string `codec:"volatile"`
-	WorkingDirectory   string `codec:"working_directory"`
-	imagePath          string `codec:"-"`
+	RootMode           string `codec:"root_mode"`
+	RootSize           string `codec:"root_size"`
+	Toplevel           string `codec:"toplevel"`
+	// UnprivilegedPortStart sets net.ipv4.ip_unprivileged_port_start in the
+	// group network namespace. -1 leaves the kernel value.
+	UnprivilegedPortStart int64  `codec:"unprivileged_port_start"`
+	TasksMax              int64  `codec:"tasks_max"`
+	ResolvConf            string `codec:"resolv_conf"`
+	User                  string `codec:"user"`
+	UserNamespacing       bool   `codec:"user_namespacing"`
+	Volatile              string `codec:"volatile"`
+	WorkingDirectory      string `codec:"working_directory"`
+	imagePath             string `codec:"-"`
+	// storeRootDir and toplevelPath are set by StartTask in store mode.
+	storeRootDir string `codec:"-"`
+	toplevelPath string `codec:"-"`
 }
 
 type ImageType string
@@ -137,13 +146,21 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	imageType := "-i"
-	if imageStat.IsDir() {
-		imageType = "-D"
+	var args, storeTail []string
+	if c.RootMode == fleetRootModeStore {
+		if !imageStat.IsDir() || c.storeRootDir == "" || c.toplevelPath == "" {
+			return nil, fmt.Errorf("root_mode = %q needs a directory image and a prepared root", fleetRootModeStore)
+		}
+		args, storeTail = fleetStoreRootArgs(c.storeRootDir, c.imagePath, c.toplevelPath)
+	} else {
+		imageType := "-i"
+		if imageStat.IsDir() {
+			imageType = "-D"
+		}
+		args = []string{imageType, c.imagePath}
 	}
-	args := []string{imageType, c.imagePath}
 
-	if c.Boot {
+	if c.Boot && c.RootMode != fleetRootModeStore {
 		args = append(args, "--boot")
 	}
 	if c.Ephemeral {
@@ -227,6 +244,9 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 	if len(c.NetworkBridge) > 0 {
 		args = append(args, fmt.Sprintf("--network-bridge=%s", c.NetworkBridge))
 	}
+	if len(storeTail) > 0 {
+		return append(args, storeTail...), nil
+	}
 	if len(c.Command) > 0 {
 		args = append(args, c.Command...)
 	}
@@ -234,6 +254,9 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 }
 
 func (c *MachineConfig) Validate() error {
+	if err := fleetValidateStoreRoot(c); err != nil {
+		return err
+	}
 	if c.Volatile != "" {
 		switch c.Volatile {
 		case "yes", "state", "overlay", "no":

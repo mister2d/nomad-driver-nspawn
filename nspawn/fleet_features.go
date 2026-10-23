@@ -13,7 +13,10 @@ var fleetFeatures = []string{
 	"load-credentials",
 	"portmap-bridge",
 	"scope-stats",
+	"store-root",
 	"tasks-max",
+	"unprivileged-ports",
+	"userns-netns",
 }
 
 func fleetFeaturesAttr() string {

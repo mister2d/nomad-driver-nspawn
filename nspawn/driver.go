@@ -90,6 +90,13 @@ var (
 		),
 		"process_two": hclspec.NewAttr("process_two", "bool", false),
 		"read_only":   hclspec.NewAttr("read_only", "bool", false),
+		"root_mode":   hclspec.NewAttr("root_mode", "string", false),
+		"root_size":   hclspec.NewAttr("root_size", "string", false),
+		"toplevel":    hclspec.NewAttr("toplevel", "string", false),
+		"unprivileged_port_start": hclspec.NewDefault(
+			hclspec.NewAttr("unprivileged_port_start", "number", false),
+			hclspec.NewLiteral("-1"),
+		),
 		"user_namespacing": hclspec.NewDefault(
 			hclspec.NewAttr("user_namespacing", "bool", false),
 			hclspec.NewLiteral("true"),
@@ -394,11 +401,28 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	driverConfig.Machine = cfg.Name + "-" + cfg.AllocID
 	driverConfig.Port = make(map[string]string)
 
-	//If network isolation is enabled, disable user namespacing and network-veth
+	storeMode := driverConfig.RootMode == fleetRootModeStore
+	// With a group network namespace, nspawn joins it and creates no veth.
+	// Image mode turns user namespacing off there, as upstream does. Store mode
+	// keeps it: the machine joins the namespace from its own user namespace and
+	// cannot reconfigure the links.
 	if cfg.NetworkIsolation != nil {
 		driverConfig.NetworkNamespace = cfg.NetworkIsolation.Path
-		driverConfig.UserNamespacing = false
 		driverConfig.NetworkVeth = false
+		if !storeMode {
+			driverConfig.UserNamespacing = false
+		}
+	}
+	if storeMode {
+		// PID 1 is the toplevel init. --boot would look for /sbin/init.
+		driverConfig.Boot = false
+		if driverConfig.UserNamespacing && driverConfig.PrivateUsersOwnership == "" {
+			// Never auto: it falls back to a recursive chown when idmap fails.
+			driverConfig.PrivateUsersOwnership = "map"
+		}
+	}
+	if driverConfig.UnprivilegedPortStart >= 0 && cfg.NetworkIsolation == nil {
+		return nil, nil, fmt.Errorf("unprivileged_port_start needs a group network namespace (bridge or cni)")
 	}
 	// pass predefined environment vars
 	if driverConfig.Environment == nil {
@@ -578,6 +602,31 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 
 	driverConfig.imagePath = imagePath
 
+	started := false
+	if storeMode {
+		top, err := fleetResolveToplevel(imagePath, driverConfig.Toplevel)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve toplevel: %v", err)
+		}
+		rootDir := fleetStoreRootDir(taskDirs.Dir)
+		if err := fleetPrepareStoreRoot(rootDir, driverConfig.RootSize); err != nil {
+			return nil, nil, fmt.Errorf("failed to prepare store root: %v", err)
+		}
+		defer func() {
+			if !started {
+				fleetCleanupStoreRoot(rootDir)
+			}
+		}()
+		driverConfig.storeRootDir = rootDir
+		driverConfig.toplevelPath = top
+		d.logger.Debug("store root prepared", "root", rootDir, "toplevel", top)
+	}
+	if driverConfig.UnprivilegedPortStart >= 0 {
+		if err := fleetSetUnprivilegedPortStart(driverConfig.NetworkNamespace, int(driverConfig.UnprivilegedPortStart)); err != nil {
+			return nil, nil, fmt.Errorf("failed to set unprivileged_port_start: %v", err)
+		}
+	}
+
 	// Get nspawn arguments
 	args, err := driverConfig.ConfigArray()
 	if err != nil {
@@ -734,6 +783,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	}
 
 	d.tasks.Set(cfg.ID, h)
+	started = true
 
 	go h.run()
 
@@ -828,6 +878,10 @@ func (d *Driver) DestroyTask(taskID string, force bool) error {
 
 	if !handle.pluginClient.Exited() {
 		handle.pluginClient.Kill()
+	}
+	// Store mode root. A no-op for image mode tasks.
+	if handle.taskConfig != nil {
+		fleetCleanupStoreRoot(fleetStoreRootDir(handle.taskConfig.TaskDir().Dir))
 	}
 
 	d.tasks.Delete(taskID)
