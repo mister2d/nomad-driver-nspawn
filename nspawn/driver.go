@@ -302,6 +302,7 @@ func (d *Driver) buildFingerprint() *drivers.Fingerprint {
 		attrs["driver.nspawn"] = pstructs.NewBoolAttribute(true)
 		attrs["driver.nspawn.version"] = pstructs.NewStringAttribute(systemdVersion)
 		attrs["driver.nspawn.volumes"] = pstructs.NewBoolAttribute(d.config.Volumes)
+		attrs["driver.nspawn.features"] = pstructs.NewStringAttribute(fleetFeaturesAttr())
 	} else {
 		health = drivers.HealthStateUndetected
 		desc = "disabled"
@@ -849,6 +850,16 @@ func (d *Driver) TaskStats(ctx context.Context, taskID string, interval time.Dur
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return nil, drivers.ErrTaskNotFound
+	}
+
+	// Prefer the machine scope cgroup. It covers the whole machine, unlike the
+	// executor, which only walks the processes below systemd-nspawn.
+	if dir, err := scopeCgroupDir(cgroupV2Root, handle.machine.Leader); err == nil {
+		ch := make(chan *drivers.TaskResourceUsage)
+		go streamScopeStats(ctx, dir, interval, ch)
+		return ch, nil
+	} else {
+		d.logger.Debug("scope stats unavailable, using executor stats", "error", err)
 	}
 
 	return handle.exec.Stats(ctx, interval)

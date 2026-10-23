@@ -1,0 +1,20 @@
+package nspawn
+
+import "strings"
+
+// fleetFeatures lists the capabilities added on the fleet branch. The list is
+// sorted. Jobs can require one with the constraint
+// attr.driver.nspawn.features set_contains <name>.
+var fleetFeatures = []string{
+	"cpu-hard-limit",
+	"cpu-weight",
+	"exec-env",
+	"load-credentials",
+	"portmap-bridge",
+	"scope-stats",
+	"tasks-max",
+}
+
+func fleetFeaturesAttr() string {
+	return strings.Join(fleetFeatures, ",")
+}
