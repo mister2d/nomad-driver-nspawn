@@ -93,6 +93,7 @@ type MachineConfig struct {
 	ProcessTwo            bool               `codec:"process_two"`
 	Properties            hclutils.MapStrStr `codec:"properties"`
 	ReadOnly              bool               `codec:"read_only"`
+	TasksMax              int64              `codec:"tasks_max"`
 	ResolvConf            string             `codec:"resolv_conf"`
 	User                  string             `codec:"user"`
 	UserNamespacing       bool               `codec:"user_namespacing"`

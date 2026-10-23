@@ -89,6 +89,10 @@ type fleetResourceInput struct {
 	ForceCPUHardLimit bool
 	// NumCPU is the CPU count of the node.
 	NumCPU int
+	// TasksMax is the task option tasks_max. 0 means unset.
+	TasksMax int64
+	// DefaultTasksMax is the plugin option default_tasks_max. 0 means unset.
+	DefaultTasksMax int64
 }
 
 // fleetResourceProperties maps Nomad task resources to systemd scope
@@ -103,6 +107,20 @@ func fleetResourceProperties(props map[string]string, in fleetResourceInput) ([]
 		props[k] = v
 		set = append(set, k)
 	}
+
+	// The task option wins over the plugin default. 0 leaves the systemd
+	// default (30000 on this fleet) in place.
+	if in.TasksMax < 0 || in.DefaultTasksMax < 0 {
+		return set, fmt.Errorf("tasks_max must not be negative")
+	}
+	tasks := in.TasksMax
+	if tasks == 0 {
+		tasks = in.DefaultTasksMax
+	}
+	if tasks > 0 {
+		setDefault("TasksMax", strconv.FormatInt(tasks, 10))
+	}
+
 	res := in.Resources
 	if res == nil {
 		return set, nil

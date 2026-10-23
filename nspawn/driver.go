@@ -63,6 +63,10 @@ var (
 			hclspec.NewAttr("cpu_hard_limit", "bool", false),
 			hclspec.NewLiteral("false"),
 		),
+		"default_tasks_max": hclspec.NewDefault(
+			hclspec.NewAttr("default_tasks_max", "number", false),
+			hclspec.NewLiteral("0"),
+		),
 	})
 
 	// taskConfigSpec is the hcl specification for the driver config section of
@@ -73,6 +77,7 @@ var (
 			hclspec.NewLiteral("true"),
 		),
 		"ephemeral": hclspec.NewAttr("ephemeral", "bool", false),
+		"tasks_max": hclspec.NewAttr("tasks_max", "number", false),
 		"cpu_hard_limit": hclspec.NewDefault(
 			hclspec.NewAttr("cpu_hard_limit", "bool", false),
 			hclspec.NewLiteral("false"),
@@ -172,6 +177,17 @@ type Config struct {
 	Volumes bool `codec:"volumes"`
 	// CPUHardLimit forces the CPUQuota cap for every task.
 	CPUHardLimit bool `codec:"cpu_hard_limit"`
+	// DefaultTasksMax is the TasksMax value for tasks without tasks_max.
+	// 0 leaves the systemd default.
+	DefaultTasksMax int64 `codec:"default_tasks_max"`
+}
+
+// defaultTasksMax returns the plugin default for TasksMax.
+func (d *Driver) defaultTasksMax() int64 {
+	if d.config == nil {
+		return 0
+	}
+	return d.config.DefaultTasksMax
 }
 
 // TaskState is the state which is encoded in the handle returned in
@@ -423,6 +439,8 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		Resources:         cfg.Resources,
 		CPUHardLimit:      driverConfig.CPUHardLimit,
 		ForceCPUHardLimit: d.config != nil && d.config.CPUHardLimit,
+		TasksMax:          driverConfig.TasksMax,
+		DefaultTasksMax:   d.defaultTasksMax(),
 	}); err != nil {
 		return nil, nil, err
 	}
