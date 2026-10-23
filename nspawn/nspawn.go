@@ -194,8 +194,13 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 	for k, v := range c.Environment {
 		args = append(args, "-E", k+"="+v)
 	}
-	for _, v := range c.Port {
-		args = append(args, "-p", v)
+	// With --network-namespace-path the namespace belongs to Nomad. The CNI
+	// portmap plugin forwards the ports. systemd-nspawn --port needs a
+	// private network that nspawn owns, so skip it here.
+	if c.NetworkNamespace == "" {
+		for _, v := range c.Port {
+			args = append(args, "-p", v)
+		}
 	}
 	for k, v := range c.Properties {
 		args = append(args, "--property="+k+"="+v)

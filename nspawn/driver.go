@@ -426,9 +426,19 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 			return nil, nil, fmt.Errorf("Invalid port declaration; use of port_map and ports")
 		}
 
-		if len(driverConfig.PortMap) > 0 && len(cfg.Resources.NomadResources.Networks) == 0 {
-			d.logger.Error("Trying to map ports but no network interface is available")
-			return nil, nil, fmt.Errorf("Trying to map ports but no network interface is available")
+		hasNetworks := cfg.Resources.NomadResources != nil && len(cfg.Resources.NomadResources.Networks) > 0
+		if len(driverConfig.PortMap) > 0 && !hasNetworks {
+			// Bridge mode: Nomad leaves Networks empty. Use the host ports
+			// from the task environment.
+			ports, err := fleetPortMapFromEnv(driverConfig.PortMap, cfg.Env)
+			if err != nil {
+				d.logger.Error("Trying to map ports but no network interface is available", "error", err)
+				return nil, nil, fmt.Errorf("Trying to map ports but no network interface is available: %v", err)
+			}
+			for l, v := range ports {
+				driverConfig.Port[l] = v
+				d.logger.Debug("mapped port from environment", "label", l, "mapping", v)
+			}
 		}
 
 		if len(driverConfig.Ports) > 0 && cfg.Resources.Ports == nil {
@@ -450,7 +460,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 				driverConfig.Port[port] = fmt.Sprintf("%d:%d", p.Value, to)
 				d.logger.Debug("exposed port", "port", p.Value, "to", to)
 			}
-		} else if len(driverConfig.PortMap) > 0 {
+		} else if len(driverConfig.PortMap) > 0 && hasNetworks {
 			network := cfg.Resources.NomadResources.Networks[0]
 			for _, port := range network.ReservedPorts {
 				// By default we will map the allocated port 1:1 to the container
