@@ -20,7 +20,9 @@ constraint {
 ## Plugin options
 
 ```hcl
-plugin "nspawn" {
+# The block label is the plugin binary's file name, not the driver name "nspawn" that jobs use.
+# With plugin "nspawn" Nomad logs "plugin not referenced in the agent configuration file".
+plugin "nomad-driver-nspawn" {
   config {
     cpu_hard_limit    = false  # true: apply CPUQuota to every task
     default_tasks_max = 0      # 0: keep the systemd default. Above 0: default and ceiling
