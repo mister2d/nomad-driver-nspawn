@@ -92,14 +92,17 @@ type MachineConfig struct {
 	PrivateUsersOwnership string             `codec:"private_users_ownership"`
 	ProcessTwo            bool               `codec:"process_two"`
 	Properties            hclutils.MapStrStr `codec:"properties"`
-	ReadOnly              bool               `codec:"read_only"`
-	TasksMax              int64              `codec:"tasks_max"`
-	ResolvConf            string             `codec:"resolv_conf"`
-	User                  string             `codec:"user"`
-	UserNamespacing       bool               `codec:"user_namespacing"`
-	Volatile              string             `codec:"volatile"`
-	WorkingDirectory      string             `codec:"working_directory"`
-	imagePath             string             `codec:"-"`
+	LoadCredentials       hclutils.MapStrStr `codec:"load_credentials"`
+	// loadCredentialArgs holds validated arguments built by StartTask.
+	loadCredentialArgs []string
+	ReadOnly           bool   `codec:"read_only"`
+	TasksMax           int64  `codec:"tasks_max"`
+	ResolvConf         string `codec:"resolv_conf"`
+	User               string `codec:"user"`
+	UserNamespacing    bool   `codec:"user_namespacing"`
+	Volatile           string `codec:"volatile"`
+	WorkingDirectory   string `codec:"working_directory"`
+	imagePath          string `codec:"-"`
 }
 
 type ImageType string
@@ -213,6 +216,7 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 	for _, k := range propKeys {
 		args = append(args, "--property="+k+"="+c.Properties[k])
 	}
+	args = append(args, c.loadCredentialArgs...)
 	if len(c.Capability) > 0 {
 		args = append(args, "--capability", strings.Join(c.Capability, ","))
 	}

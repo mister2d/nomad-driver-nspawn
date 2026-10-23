@@ -76,8 +76,9 @@ var (
 			hclspec.NewAttr("boot", "bool", false),
 			hclspec.NewLiteral("true"),
 		),
-		"ephemeral": hclspec.NewAttr("ephemeral", "bool", false),
-		"tasks_max": hclspec.NewAttr("tasks_max", "number", false),
+		"ephemeral":        hclspec.NewAttr("ephemeral", "bool", false),
+		"tasks_max":        hclspec.NewAttr("tasks_max", "number", false),
+		"load_credentials": hclspec.NewAttr("load_credentials", "list(map(string))", false),
 		"cpu_hard_limit": hclspec.NewDefault(
 			hclspec.NewAttr("cpu_hard_limit", "bool", false),
 			hclspec.NewLiteral("false"),
@@ -527,6 +528,13 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 
 		}
 	}
+
+	// Validate credentials. Paths must stay inside the task directory.
+	credArgs, err := fleetLoadCredentialArgs(taskDirs.Dir, []string{taskDirs.LocalDir, taskDirs.SecretsDir}, driverConfig.LoadCredentials)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to validate credentials: %v", err)
+	}
+	driverConfig.loadCredentialArgs = credArgs
 
 	// Validate config
 	if err := driverConfig.Validate(); err != nil {

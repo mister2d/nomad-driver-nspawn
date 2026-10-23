@@ -168,6 +168,30 @@ should cover a broad range of use cases:
     ports = ["http"]
   }
   ```
+* `load_credentials` - (Optional) Map of credential ID to file path. Each entry
+  becomes `--load-credential=ID:PATH` for `systemd-nspawn` (systemd 247 or
+  newer). The path is relative to the task directory (for example
+  `secrets/ssh_key`) or an absolute host path. After symlinks are resolved, the
+  file must be a regular file inside the task `local/` or `secrets/` directory.
+  Paths with `..` escapes, symlink escapes or `:` are refused and the task does
+  not start. IDs may contain `A-Za-z0-9_.-`, must not start with a dot and are
+  at most 255 bytes. Prefer `secrets/` for sensitive data and write the file
+  with a Nomad `template` block.
+
+  ```hcl
+  config {
+    load_credentials = {
+      "ssh.authorized_keys.root" = "secrets/authorized_keys"
+    }
+  }
+  ```
+
+  Inside the machine the credentials appear under `/run/credentials/`. An image
+  consumes them in one of these ways. A unit can use
+  `LoadCredential=ssh.authorized_keys.root` to read it. systemd's
+  sshd-generator and tmpfiles support the `ssh.authorized_keys.<user>`
+  credential, which installs keys for that user without changes to the image.
+  Check that PID 1 inside the image supports the credential you use.
 * [`capability`](https://www.freedesktop.org/software/systemd/man/systemd-nspawn.html#--capability=) -
   (Optional) List of additional capabilities to grant the container.
 
