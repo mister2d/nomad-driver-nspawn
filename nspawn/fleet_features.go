@@ -8,6 +8,7 @@ import "strings"
 var fleetFeatures = []string{
 	"cpu-hard-limit",
 	"cpu-weight",
+	"env-names",
 	"exec-env",
 	"load-credentials",
 	"portmap-bridge",

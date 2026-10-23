@@ -3,10 +3,18 @@
 This fork adds options for jailed, ephemeral sandbox machines. Each option is
 off or neutral by default. Existing jobs keep their behavior.
 
+## Environment names
+
+systemd-nspawn `--setenv` accepts only `[A-Za-z0-9_]` names without a leading digit. Nomad builds
+some names from task names, for example `NOMAD_ALLOC_IP_connect-proxy-<service>` when a group has a
+Consul Connect sidecar. The driver renames such a variable (each other character becomes `_`, a
+leading digit gets a `_` prefix) and skips it with a warning if the new name is already set. Without
+this a machine next to a Connect sidecar fails with "Cannot assign environment variable".
+
 ## Feature attribute
 
 The fingerprint sets `driver.nspawn.features` to a sorted, comma separated
-list: `cpu-hard-limit, cpu-weight, exec-env, load-credentials,
+list: `cpu-hard-limit, cpu-weight, env-names, exec-env, load-credentials,
 portmap-bridge, scope-stats, tasks-max`. A job can require a feature:
 
 ```hcl

@@ -404,8 +404,8 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	if driverConfig.Environment == nil {
 		driverConfig.Environment = make(hclutils.MapStrStr)
 	}
-	for k, v := range cfg.Env {
-		driverConfig.Environment[k] = v
+	if skipped := fleetMergeTaskEnv(driverConfig.Environment, cfg.Env); len(skipped) > 0 {
+		d.logger.Warn("skipped task environment variables with names systemd-nspawn rejects", "names", skipped)
 	}
 
 	// bind Task Directories into container
