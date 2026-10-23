@@ -76,3 +76,21 @@ func TestFleetScopeCgroupDirNoProcess(t *testing.T) {
 		t.Fatal("expected error for missing pid")
 	}
 }
+
+func TestFleetTicks(t *testing.T) {
+	cases := []struct {
+		percent, total float64
+		ncpu           int
+		want           float64
+	}{
+		{100, 8000, 8, 1000}, // one full core of an 8 x 1000 MHz node
+		{250, 19200, 8, 6000},
+		{50, 0, 8, 0}, // unknown node compute
+		{50, 8000, 0, 0},
+	}
+	for _, c := range cases {
+		if got := fleetTicks(c.percent, c.total, c.ncpu); got != c.want {
+			t.Errorf("fleetTicks(%v, %v, %d) = %v, want %v", c.percent, c.total, c.ncpu, got, c.want)
+		}
+	}
+}

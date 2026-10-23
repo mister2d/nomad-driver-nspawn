@@ -7,20 +7,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	cstructs "github.com/hashicorp/nomad/client/structs"
+	shelpers "github.com/hashicorp/nomad/helper/stats"
 	"github.com/hashicorp/nomad/plugins/drivers"
 )
 
 // cgroupV2Root is the mount point of the unified cgroup hierarchy.
 const cgroupV2Root = "/sys/fs/cgroup"
 
+var ticksInit sync.Once
+
+// fleetTicks converts a CPU percent (100 = one core) to MHz ticks the way the vendored Nomad
+// client/stats CpuStats.TicksConsumed does: percent/100 * TotalTicksAvailable / numCPU.
+// Nomad sums TotalTicks into allocation CPU usage, and the Autoscaler's nomad-apm
+// (avg_cpu-allocated) compares it with the reserved MHz. totalTicks <= 0 or numCPU <= 0 gives 0.
+func fleetTicks(percent, totalTicks float64, numCPU int) float64 {
+	if totalTicks <= 0 || numCPU <= 0 {
+		return 0
+	}
+	return percent / 100 * totalTicks / float64(numCPU)
+}
+
+func hostTotalTicks() float64 {
+	ticksInit.Do(func() { _ = shelpers.Init() })
+	return shelpers.TotalTicksAvailable()
+}
+
 var (
 	fleetScopeMemMeasured = []string{"RSS", "Cache", "Swap", "Usage", "Max Usage", "Kernel Usage"}
-	fleetScopeCPUMeasured = []string{"System Mode", "User Mode", "Throttled Periods", "Throttled Time", "Percent"}
+	fleetScopeCPUMeasured = []string{"System Mode", "User Mode", "Throttled Periods", "Throttled Time", "Percent", "Total Ticks"}
 )
 
 // scopeCgroupPath extracts the machine scope cgroup path from the content of
@@ -151,6 +172,7 @@ func collectScopeStats(dir string, prev cpuSample, now time.Time) (*drivers.Task
 			cs.UserMode = float64(cur.userUsec-prev.userUsec) / elapsed * 100
 			cs.SystemMode = float64(cur.systemUsec-prev.systemUsec) / elapsed * 100
 			cs.Percent = float64(cur.usageUsec-prev.usageUsec) / elapsed * 100
+			cs.TotalTicks = fleetTicks(cs.Percent, hostTotalTicks(), runtime.NumCPU())
 		}
 	}
 
