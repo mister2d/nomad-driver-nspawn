@@ -844,9 +844,7 @@ func (d *Driver) ExecTask(taskID string, cmd []string, timeout time.Duration) (*
 		return nil, err
 	}
 
-	command := []string{"systemd-run", "--wait", "--service-type=exec",
-		"--collect", "--quiet", "--machine", handle.machine.Name, "--pipe"}
-	command = append(command, cmd...)
+	command := fleetExecCommand(handle.machine.Name, cmd, false, fleetTaskEnv(handle))
 
 	out, exitCode, err := handle.exec.Exec(time.Now().Add(timeout), command[0], command[1:])
 	if err != nil {
@@ -884,14 +882,7 @@ func (d *Driver) ExecTaskStreamingRaw(ctx context.Context,
 		return err
 	}
 
-	cmd := []string{"systemd-run", "--wait", "--service-type=exec",
-		"--collect", "--quiet", "--machine", handle.machine.Name}
-	if tty {
-		cmd = append(cmd, "--pty", "--send-sighup")
-	} else {
-		cmd = append(cmd, "--pipe")
-	}
-	cmd = append(cmd, command...)
+	cmd := fleetExecCommand(handle.machine.Name, command, tty, fleetTaskEnv(handle))
 
 	return handle.exec.ExecStreaming(ctx, cmd, tty, stream)
 }
