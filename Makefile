@@ -4,7 +4,7 @@ PWD := $(shell pwd)
 GOPATH := $(shell go env GOPATH)
 GO120 := $(GOPATH)/bin/go1.20
 GO120_INSTALLED := $(shell $GO120 version 2> /dev/null)
-BUILDARGS := build -mod=vendor -a -v -ldflags '-extldflags "-static" -X github.com/JanMa/nomad-driver-nspawn/nspawn.pluginVersion=${VERSION}' -o $(BINARY)
+BUILDARGS := build -mod=vendor -a -v -ldflags '-extldflags "-static" -X github.com/mister2d/nomad-driver-nspawn/nspawn.pluginVersion=${VERSION}' -o $(BINARY)
 
 .DELETE_ON_ERROR:
 .PHONY: docker-image get tidy vendor test cover clean

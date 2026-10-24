@@ -3,7 +3,7 @@ package main
 import (
 	log "github.com/hashicorp/go-hclog"
 
-	"github.com/JanMa/nomad-driver-nspawn/nspawn"
+	"github.com/mister2d/nomad-driver-nspawn/nspawn"
 	"github.com/hashicorp/nomad/plugins"
 )
 

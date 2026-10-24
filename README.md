@@ -7,12 +7,15 @@ Containers started via this driver will have private networking enabled by
 default and their machine ID will be set to the allocation ID of the started
 Nomad task.
 
-This repository is the fleet fork of
-[JanMa/nomad-driver-nspawn](https://github.com/JanMa/nomad-driver-nspawn). The
-fork adds options for jailed sandbox machines, for example store root mode with
-a user namespace for each machine. [FLEET.md](FLEET.md) documents the
-additions. The Go module path stays `github.com/JanMa/nomad-driver-nspawn`, so
-that upstream changes merge without conflicts.
+The Go module path is `github.com/mister2d/nomad-driver-nspawn`. This driver
+adds options for jailed sandbox machines, for example store root mode with a
+user namespace for each machine. [FLEET.md](FLEET.md) documents the additions.
+
+The project started from
+[JanMa/nomad-driver-nspawn](https://github.com/JanMa/nomad-driver-nspawn)
+v0.10.0. It is now developed separately and does not send changes to that
+project. The original MIT license and copyright notice stay in
+[LICENSE](LICENSE).
 
 ## Client requirements
 

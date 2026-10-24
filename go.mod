@@ -1,4 +1,4 @@
-module github.com/JanMa/nomad-driver-nspawn
+module github.com/mister2d/nomad-driver-nspawn
 
 go 1.20
 
