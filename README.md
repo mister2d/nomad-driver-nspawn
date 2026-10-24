@@ -265,7 +265,7 @@ The block label is the file name of the plugin binary. With a binary named
 `driver = "nspawn"`.
 
 ```hcl
-plugin "nspawn" {
+plugin "nomad-driver-nspawn" {
   config {
     enabled = true
     volumes = true
