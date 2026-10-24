@@ -7,6 +7,13 @@ Containers started via this driver will have private networking enabled by
 default and their machine ID will be set to the allocation ID of the started
 Nomad task.
 
+This repository is the fleet fork of
+[JanMa/nomad-driver-nspawn](https://github.com/JanMa/nomad-driver-nspawn). The
+fork adds options for jailed sandbox machines, for example store root mode with
+a user namespace for each machine. [FLEET.md](FLEET.md) documents the
+additions. The Go module path stays `github.com/JanMa/nomad-driver-nspawn`, so
+that upstream changes merge without conflicts.
+
 ## Client requirements
 
 * [Nomad](https://nomadproject.io) 1.4.0+ running as `root`
@@ -20,7 +27,7 @@ Nomad task.
 Checkout this repository and simply run `make`.
 
 ```shell
-$ git clone https://github.com/JanMa/nomad-driver-nspawn.git
+$ git clone https://github.com/mister2d/nomad-driver-nspawn.git
 $ cd nomad-driver-nspawn
 $ make
 ```
@@ -252,6 +259,10 @@ networking. It can therefore be used with Consul service mesh.
 
 An example of using these plugin options with the new plugin syntax is
 shown below:
+
+The block label is the file name of the plugin binary. With a binary named
+`nomad-driver-nspawn`, use `plugin "nomad-driver-nspawn"`. Jobs still use
+`driver = "nspawn"`.
 
 ```hcl
 plugin "nspawn" {
