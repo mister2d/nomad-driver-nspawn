@@ -105,6 +105,7 @@ var (
 		"private_users_ownership": hclspec.NewAttr("private_users_ownership", "string", false),
 		"command":                 hclspec.NewAttr("command", "list(string)", false),
 		"console":                 hclspec.NewAttr("console", "string", false),
+		"hostname":                hclspec.NewAttr("hostname", "string", false),
 		"image":                   hclspec.NewAttr("image", "string", true),
 		"image_download": hclspec.NewBlock("image_download", false,
 			hclspec.NewObject(map[string]*hclspec.Spec{

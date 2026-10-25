@@ -14,8 +14,9 @@ this a machine next to a Connect sidecar fails with "Cannot assign environment v
 ## Feature attribute
 
 The fingerprint sets `driver.nspawn.features` to a sorted, comma separated
-list: `cpu-hard-limit, cpu-weight, env-names, exec-env, load-credentials,
-portmap-bridge, scope-stats, tasks-max`. A job can require a feature:
+list: `cpu-hard-limit, cpu-weight, env-names, exec-env, hostname,
+load-credentials, portmap-bridge, scope-stats, store-root, tasks-max,
+unprivileged-ports, userns-netns`. A job can require a feature:
 
 ```hcl
 constraint {
@@ -51,6 +52,20 @@ plugin "nomad-driver-nspawn" {
 | `toplevel` | string | Store mode only. The `/nix/store/<name>` toplevel to run. The default follows `/nix/var/nix/profiles/system` inside the image. |
 | `root_size` | string | Store mode only. Size of the tmpfs root, for example `256m` (default) or `1g`. |
 | `unprivileged_port_start` | number | Sets `net.ipv4.ip_unprivileged_port_start` in the group network namespace before start. -1 (default) leaves it. Needs bridge or cni networking. Use 0 to let sshd bind port 22 from inside a user namespace. |
+| `hostname` | string | Becomes `--hostname`. Must be a DNS name of at most 64 characters. An unresolved `${...}` fails validation. Empty (default) keeps the nspawn default, the machine name. See "Hostname". |
+
+## Hostname
+
+Set the hostname from the allocation, for example
+`hostname = "sbx-${NOMAD_SHORT_ALLOC_ID}"`. Nomad interpolates the value before
+the driver gets it. nspawn sets the name in the machine UTS namespace before
+init starts.
+
+systemd in the machine sets the hostname at boot in this order:
+`systemd.hostname=` on the init command line, then `/etc/hostname`, then the
+`system.hostname` credential, then the name that is already set. An image with
+`/etc/hostname` thus replaces this option. Build a shared image without a
+static hostname. On NixOS, set `networking.hostName = ""`.
 
 ## Store root mode
 

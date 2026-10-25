@@ -15,7 +15,7 @@ func TestFleetFeaturesSorted(t *testing.T) {
 			t.Fatalf("bad feature name %q", f)
 		}
 	}
-	want := "cpu-hard-limit,cpu-weight,env-names,exec-env,load-credentials,portmap-bridge,scope-stats,store-root,tasks-max,unprivileged-ports,userns-netns"
+	want := "cpu-hard-limit,cpu-weight,env-names,exec-env,hostname,load-credentials,portmap-bridge,scope-stats,store-root,tasks-max,unprivileged-ports,userns-netns"
 	if got := fleetFeaturesAttr(); got != want {
 		t.Fatalf("got %q", got)
 	}

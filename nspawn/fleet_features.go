@@ -10,6 +10,7 @@ var fleetFeatures = []string{
 	"cpu-weight",
 	"env-names",
 	"exec-env",
+	"hostname",
 	"load-credentials",
 	"portmap-bridge",
 	"scope-stats",

@@ -76,6 +76,7 @@ type MachineConfig struct {
 	CPUHardLimit     bool               `codec:"cpu_hard_limit"`
 	Environment      hclutils.MapStrStr `codec:"environment"`
 	Ephemeral        bool               `codec:"ephemeral"`
+	Hostname         string             `codec:"hostname"`
 	Image            string             `codec:"image"`
 	ImageDownload    *ImageDownloadOpts `codec:"image_download,omitempty"`
 	Machine          string             `codec:"machine"`
@@ -194,6 +195,7 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 	if c.Machine != "" {
 		args = append(args, "--machine", c.Machine)
 	}
+	args = append(args, fleetHostnameArgs(c.Hostname)...)
 	if c.PivotRoot != "" {
 		args = append(args, "--pivot-root", c.PivotRoot)
 	}
@@ -255,6 +257,9 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 
 func (c *MachineConfig) Validate() error {
 	if err := fleetValidateStoreRoot(c); err != nil {
+		return err
+	}
+	if err := fleetValidateHostname(c.Hostname); err != nil {
 		return err
 	}
 	if c.Volatile != "" {
