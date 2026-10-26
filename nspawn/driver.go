@@ -70,15 +70,17 @@ var (
 		),
 		"scratch": hclspec.NewBlock("scratch", false,
 			hclspec.NewObject(map[string]*hclspec.Spec{
-				"pool":           hclspec.NewAttr("pool", "string", true),
-				"namespace":      hclspec.NewAttr("namespace", "string", true),
-				"client_id":      hclspec.NewAttr("client_id", "string", true),
-				"keyring":        hclspec.NewAttr("keyring", "string", true),
-				"budget":         hclspec.NewAttr("budget", "string", true),
-				"mount_dir":      hclspec.NewAttr("mount_dir", "string", false),
-				"sweep_interval": hclspec.NewAttr("sweep_interval", "string", false),
-				"sweep_grace":    hclspec.NewAttr("sweep_grace", "string", false),
-				"op_timeout":     hclspec.NewAttr("op_timeout", "string", false),
+				"pool":            hclspec.NewAttr("pool", "string", true),
+				"namespace":       hclspec.NewAttr("namespace", "string", true),
+				"client_id":       hclspec.NewAttr("client_id", "string", true),
+				"keyring":         hclspec.NewAttr("keyring", "string", true),
+				"budget":          hclspec.NewAttr("budget", "string", true),
+				"mount_dir":       hclspec.NewAttr("mount_dir", "string", false),
+				"sweep_interval":  hclspec.NewAttr("sweep_interval", "string", false),
+				"sweep_grace":     hclspec.NewAttr("sweep_grace", "string", false),
+				"op_timeout":      hclspec.NewAttr("op_timeout", "string", false),
+				"max_volumes":     hclspec.NewAttr("max_volumes", "number", false),
+				"max_volume_size": hclspec.NewAttr("max_volume_size", "string", false),
 			})),
 	})
 
@@ -352,6 +354,8 @@ func (d *Driver) buildFingerprint() *drivers.Fingerprint {
 			} else {
 				features += ",scratch-rbd"
 				attrs["driver.nspawn.scratch.budget"] = pstructs.NewIntAttribute(sc.budget, "B")
+				attrs["driver.nspawn.scratch.max_volumes"] = pstructs.NewIntAttribute(int64(sc.maxVolumes), "")
+				attrs["driver.nspawn.scratch.max_volume_size"] = pstructs.NewIntAttribute(sc.maxVolumeSize, "B")
 			}
 		}
 		attrs["driver.nspawn.features"] = pstructs.NewStringAttribute(features)

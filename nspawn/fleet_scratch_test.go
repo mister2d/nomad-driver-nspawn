@@ -163,7 +163,8 @@ func TestNewFleetScratch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.budget != 200<<30 || s.mountDir != fleetScratchDefaultMountDir {
+	if s.budget != 200<<30 || s.mountDir != fleetScratchDefaultMountDir ||
+		s.maxVolumes != fleetScratchMaxVolumes || s.maxVolumeSize != fleetScratchMaxSize {
 		t.Fatalf("defaults: %+v", s)
 	}
 	if s, _ := newFleetScratch(nil, nil); s != nil {
@@ -177,6 +178,10 @@ func TestNewFleetScratch(t *testing.T) {
 		"mount":    func(c *FleetScratchConfig) { c.MountDir = "/" },
 		"interval": func(c *FleetScratchConfig) { c.SweepInterval = "0s" },
 		"grace":    func(c *FleetScratchConfig) { c.SweepGrace = "-1h" },
+		"maxvols":  func(c *FleetScratchConfig) { c.MaxVolumes = 5 },
+		"maxvol0":  func(c *FleetScratchConfig) { c.MaxVolumes = -1 },
+		"maxsize":  func(c *FleetScratchConfig) { c.MaxVolumeSize = "2T" },
+		"minsize":  func(c *FleetScratchConfig) { c.MaxVolumeSize = "512M" },
 	} {
 		c := base
 		mut(&c)
@@ -500,5 +505,32 @@ func TestFleetScratchListRace(t *testing.T) {
 	f.flakyLong = 2
 	if err := s.Provision(context.Background(), testAlloc, "machine", "m", testVols, func(string) {}); err != nil {
 		t.Fatalf("provision with two failed listings: %v", err)
+	}
+}
+
+func TestFleetScratchCeilings(t *testing.T) {
+	c := FleetScratchConfig{Pool: "p", Namespace: "n", ClientID: "c", Keyring: "/k", Budget: "200G",
+		MaxVolumes: 2, MaxVolumeSize: "10G"}
+	s, err := newFleetScratch(&c, hclog.NewNullLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.maxVolumes != 2 || s.maxVolumeSize != 10<<30 {
+		t.Fatalf("ceilings: %d %d", s.maxVolumes, s.maxVolumeSize)
+	}
+	ok := []FleetScratchVolume{{Name: "sys", Size: "10G"}, {Name: "home", Size: "1G"}}
+	if err := s.checkCeilings(ok); err != nil {
+		t.Errorf("within ceilings: %v", err)
+	}
+	if err := s.checkCeilings([]FleetScratchVolume{{Name: "sys", Size: "11G"}}); err == nil {
+		t.Error("size above max_volume_size: want an error")
+	}
+	three := append(ok, FleetScratchVolume{Name: "x", Size: "1G"})
+	if err := s.checkCeilings(three); err == nil {
+		t.Error("count above max_volumes: want an error")
+	}
+	// A refused start creates nothing.
+	if err := s.Provision(context.Background(), "a", "t", "m", three, func(string) {}); err == nil {
+		t.Error("Provision above max_volumes: want an error")
 	}
 }

@@ -18,7 +18,9 @@ list: `address-families, cpu-hard-limit, cpu-weight, env-names, exec-env, hostna
 load-credentials, portmap-bridge, scope-stats, store-lower, store-root,
 tasks-max, unprivileged-ports, userns-netns`. The list ends with
 `scratch-rbd` only when the plugin has a `scratch` block and its Ceph key
-works (see "Scratch volumes"). A job can require a feature:
+works (see "Scratch volumes"). Then the fingerprint also sets
+`driver.nspawn.scratch.budget`, `driver.nspawn.scratch.max_volumes` and
+`driver.nspawn.scratch.max_volume_size` (bytes). A job can require a feature:
 
 ```hcl
 constraint {
@@ -45,10 +47,13 @@ plugin "nomad-driver-nspawn" {
       client_id = "nspawn.scratch.prime"  # cephx user without the "client." prefix
       keyring   = "/etc/ceph/ceph.client.nspawn.scratch.prime.keyring"
       budget    = "200G"                  # total provisioned size on this node
-      # mount_dir      = "/run/nspawn-scratch"
-      # sweep_interval = "10m"
-      # sweep_grace    = "15m"
-      # op_timeout     = "60s"  # each rbd call
+      # The values below are the defaults.
+      mount_dir       = "/run/nspawn-scratch"
+      sweep_interval  = "10m"
+      sweep_grace     = "15m"
+      op_timeout      = "60s"  # each rbd call
+      max_volumes     = 4      # scratch blocks in one task. 1 to 4
+      max_volume_size = "1T"   # size of one volume. 1G to 1T
     }
   }
 }
@@ -67,7 +72,7 @@ plugin "nomad-driver-nspawn" {
 | `toplevel` | string | Store mode only. The `/nix/store/<name>` toplevel to run. The default follows `/nix/var/nix/profiles/system` inside the image. |
 | `root_size` | string | Store mode only. Size of the tmpfs root, for example `256m` (default) or `1g`. |
 | `unprivileged_port_start` | number | Sets `net.ipv4.ip_unprivileged_port_start` in the group network namespace before start. -1 (default) leaves it. Needs bridge or cni networking. Use 0 to let sshd bind port 22 from inside a user namespace. |
-| `scratch` | block, repeatable | Store mode only. One RBD scratch volume for the life of the task: `name` (a-z0-9, 16 at most), `size` (`<n>M`, `<n>G` or `<n>T`, 1G to 1T), `bind` (list of maps, as the `bind` option: a directory on the volume, `.` for its root, to a machine path). Paths may not hold `:` or `,`. `/nix/store`, `/alloc`, `/local` and `/secrets` are reserved targets. At most 4. See "Scratch volumes". |
+| `scratch` | block, repeatable | Store mode only. One RBD scratch volume for the life of the task: `name` (a-z0-9, 16 at most), `size` (`<n>M`, `<n>G` or `<n>T`, 1G to `max_volume_size`), `bind` (list of maps, as the `bind` option: a directory on the volume, `.` for its root, to a machine path). Paths may not hold `:` or `,`. `/nix/store`, `/alloc`, `/local` and `/secrets` are reserved targets. At most `max_volumes`. See "Scratch volumes". |
 | `store_lower_path` | string | Store mode only. A second idmapped read-only bind of the image store at this path below `/nix/`, for an overlay store in the machine. |
 | `restrict_address_families` | list(string) | Becomes `--restrict-address-families=` with the entries joined by spaces. Each entry is `AF_<NAME>` (allow) or `~AF_<NAME>` (deny). `"none"` alone denies every family. Empty (default) passes nothing and keeps the nspawn default (no filter today, `AF_INET AF_INET6 AF_UNIX` in a future systemd). Needs systemd 261 or later. A NixOS machine needs `AF_NETLINK` as well (glibc `getifaddrs`, `ip`, systemd). |
 | `hostname` | string | Becomes `--hostname`. Must be a DNS name of at most 64 characters. An unresolved `${...}` fails validation. Empty (default) keeps the nspawn default, the machine name. See "Hostname". |
@@ -139,28 +144,31 @@ volume that is created at placement and deleted at stop.
 ```hcl
 scratch {
   name = "sys"
-  size = "40G"
+  size = "10G"
   bind = [{ "." = "/nix/.rw-store", "var-nix" = "/nix/var/nix", "tmp" = "/tmp" }]
 }
 scratch {
   name = "home"
-  size = "20G"
+  size = "10G"
   bind = [{ "." = "/home" }]
 }
 ```
 
 Start, before nspawn runs:
 
-1. The driver adds the provisioned sizes of all images in the namespace. It
+1. The driver checks the node ceilings. A task with more than `max_volumes`
+   volumes, or a volume larger than `max_volume_size`, does not start. The
+   driver creates nothing.
+2. The driver adds the provisioned sizes of all images in the namespace. It
    refuses the start if the sum plus the request is above `budget`.
-2. It creates `<alloc id>-<task hash>-<name>` (layering, exclusive-lock) and
+3. It creates `<alloc id>-<task hash>-<name>` (layering, exclusive-lock) and
    tags it with `fleet.machine` and `fleet.created`.
-3. It maps the image with krbd (`exclusive,noshare`), formats it with ext4
+4. It maps the image with krbd (`exclusive,noshare`), formats it with ext4
    and mounts it (`nodev,nosuid,noatime`) at `<mount_dir>/<image>`.
-4. It creates each bind source directory. A `/tmp` or `/var/tmp` target gets
+5. It creates each bind source directory. A `/tmp` or `/var/tmp` target gets
    mode 1777. nspawn binds each one with `:idmap`, parents first.
 
-Before step 1 the driver releases old images of the same task (a restart
+Before step 2 the driver releases old images of the same task (a restart
 after a host reboot finds them). A failure in any step releases what the start
 made. The start fails and Nomad reschedules. Tags are set before the map: after it
 the kernel holds the exclusive lock and `image-meta set` gets `EROFS`. A start

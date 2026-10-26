@@ -51,10 +51,13 @@ const (
 	fleetScratchDefaultOpTimeout     = 60 * time.Second
 	fleetScratchMkfsTimeout          = 5 * time.Minute
 	fleetScratchHealthTTL            = time.Minute
-	fleetScratchMaxVolumes           = 4
-	fleetScratchMinSize              = int64(1) << 30
-	fleetScratchMaxSize              = int64(1) << 40
-	fleetMachinesStateDir            = "/run/systemd/machines"
+	// fleetScratchMaxVolumes and fleetScratchMaxSize are the hard limits of
+	// the driver. The plugin options max_volumes and max_volume_size set a
+	// node ceiling at or below them (default: the hard limit).
+	fleetScratchMaxVolumes = 4
+	fleetScratchMinSize    = int64(1) << 30
+	fleetScratchMaxSize    = int64(1) << 40
+	fleetMachinesStateDir  = "/run/systemd/machines"
 )
 
 var (
@@ -77,6 +80,8 @@ type FleetScratchConfig struct {
 	SweepInterval string `codec:"sweep_interval"`
 	SweepGrace    string `codec:"sweep_grace"`
 	OpTimeout     string `codec:"op_timeout"`
+	MaxVolumes    int64  `codec:"max_volumes"`
+	MaxVolumeSize string `codec:"max_volume_size"`
 }
 
 // FleetScratchVolume is one task block scratch.
@@ -249,6 +254,8 @@ func (fleetExecRunner) Run(ctx context.Context, name string, args ...string) ([]
 type fleetScratch struct {
 	pool, namespace, clientID, keyring, mountDir string
 	budget                                       int64
+	maxVolumes                                   int
+	maxVolumeSize                                int64
 	sweepInterval, sweepGrace                    time.Duration
 	opTimeout                                    time.Duration
 
@@ -333,6 +340,24 @@ func newFleetScratch(c *FleetScratchConfig, logger hclog.Logger) (*fleetScratch,
 	}
 	if s.opTimeout, err = fleetDurationOr(c.OpTimeout, fleetScratchDefaultOpTimeout, false); err != nil {
 		return nil, fmt.Errorf("scratch op_timeout: %v", err)
+	}
+	s.maxVolumes = fleetScratchMaxVolumes
+	if c.MaxVolumes != 0 {
+		if c.MaxVolumes < 1 || c.MaxVolumes > fleetScratchMaxVolumes {
+			return nil, fmt.Errorf("scratch max_volumes must be 1 to %d", fleetScratchMaxVolumes)
+		}
+		s.maxVolumes = int(c.MaxVolumes)
+	}
+	s.maxVolumeSize = fleetScratchMaxSize
+	if c.MaxVolumeSize != "" {
+		n, err := fleetParseBytes(c.MaxVolumeSize)
+		if err != nil {
+			return nil, fmt.Errorf("scratch max_volume_size: %v", err)
+		}
+		if n < fleetScratchMinSize || n > fleetScratchMaxSize {
+			return nil, fmt.Errorf("scratch max_volume_size must be 1G to 1T")
+		}
+		s.maxVolumeSize = n
 	}
 	return s, nil
 }
@@ -454,6 +479,9 @@ func (s *fleetScratch) checkHealth(ctx context.Context) {
 // The prefix stays in flight until the caller calls Settle, after the task is
 // in the task store or the start has failed.
 func (s *fleetScratch) Provision(ctx context.Context, allocID, task, machine string, vols []FleetScratchVolume, emit func(string)) error {
+	if err := s.checkCeilings(vols); err != nil {
+		return err
+	}
 	prefix := fleetScratchPrefix(allocID, task)
 	s.inflightMu.Lock()
 	if s.inflight == nil {
@@ -467,6 +495,24 @@ func (s *fleetScratch) Provision(ctx context.Context, allocID, task, machine str
 		}
 		s.Settle(prefix)
 		return err
+	}
+	return nil
+}
+
+// checkCeilings applies the node ceilings max_volumes and max_volume_size.
+// Validate already applied the hard limits of the driver.
+func (s *fleetScratch) checkCeilings(vols []FleetScratchVolume) error {
+	if len(vols) > s.maxVolumes {
+		return fmt.Errorf("scratch: %d volumes, the node allows %d (max_volumes)", len(vols), s.maxVolumes)
+	}
+	for _, v := range vols {
+		n, err := fleetParseBytes(v.Size)
+		if err != nil {
+			return fmt.Errorf("scratch %q: %v", v.Name, err)
+		}
+		if n > s.maxVolumeSize {
+			return fmt.Errorf("scratch %q: size %s is above the node ceiling of %d bytes (max_volume_size)", v.Name, v.Size, s.maxVolumeSize)
+		}
 	}
 	return nil
 }
