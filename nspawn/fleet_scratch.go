@@ -264,6 +264,13 @@ type fleetScratch struct {
 	// mu serializes the budget check and the image creation.
 	mu sync.Mutex
 
+	// inflight holds the prefixes of starts that are not yet in the task
+	// store. The sweeper never touches them. Tags cannot be changed after the
+	// map: the kernel holds the exclusive lock, and image-meta set from the
+	// CLI gets EROFS.
+	inflightMu sync.Mutex
+	inflight   map[string]bool
+
 	healthMu   sync.Mutex
 	healthAt   time.Time
 	healthErr  error
@@ -412,12 +419,22 @@ func (s *fleetScratch) checkHealth(ctx context.Context) {
 
 // Provision creates, maps, formats and mounts the volumes of one task. On
 // error it releases what it made.
+//
+// The prefix stays in flight until the caller calls Settle, after the task is
+// in the task store or the start has failed.
 func (s *fleetScratch) Provision(ctx context.Context, allocID, task, machine string, vols []FleetScratchVolume, emit func(string)) error {
 	prefix := fleetScratchPrefix(allocID, task)
+	s.inflightMu.Lock()
+	if s.inflight == nil {
+		s.inflight = map[string]bool{}
+	}
+	s.inflight[prefix] = true
+	s.inflightMu.Unlock()
 	if err := s.provision(ctx, prefix, machine, vols, emit); err != nil {
 		if rerr := s.Release(ctx, prefix); rerr != nil {
 			s.logger.Error("scratch: cleanup after a failed start", "prefix", prefix, "error", rerr)
 		}
+		s.Settle(prefix)
 		return err
 	}
 	return nil
@@ -506,13 +523,6 @@ func (s *fleetScratch) provision(ctx context.Context, prefix, machine string, vo
 			if err := os.Chmod(p, fleetScratchDirMode(target)); err != nil {
 				return err
 			}
-		}
-	}
-	// Stamp the time again. The sweeper grace then starts after the slow steps (map, mkfs).
-	now := strconv.FormatInt(s.now().Unix(), 10)
-	for _, v := range vols {
-		if _, err := s.rbd(ctx, 0, s.scoped("image-meta", "set", prefix+v.Name, "fleet.created", now)...); err != nil {
-			return fmt.Errorf("scratch: tag %s: %v", prefix+v.Name, err)
 		}
 	}
 	emit(fmt.Sprintf("scratch: mapped and mounted %d volumes", len(vols)))
@@ -678,6 +688,19 @@ func (s *fleetScratch) imageMeta(ctx context.Context, image, key string) (string
 	return strings.TrimSpace(string(out)), nil
 }
 
+// Settle ends the in-flight state of a prefix.
+func (s *fleetScratch) Settle(prefix string) {
+	s.inflightMu.Lock()
+	delete(s.inflight, prefix)
+	s.inflightMu.Unlock()
+}
+
+func (s *fleetScratch) isInflight(prefix string) bool {
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	return s.inflight[prefix]
+}
+
 // Sweep releases every prefix that no live task owns. live reports whether a
 // task of this driver owns the prefix.
 func (s *fleetScratch) Sweep(ctx context.Context, live func(prefix string) bool) {
@@ -713,7 +736,7 @@ func (s *fleetScratch) Sweep(ctx context.Context, live func(prefix string) bool)
 		}
 	}
 	for p, img := range cands {
-		if live(p) {
+		if live(p) || s.isInflight(p) {
 			continue
 		}
 		// An image in the pool must prove its age and its machine. Missing or unreadable tags (an rbd

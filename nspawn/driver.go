@@ -689,6 +689,9 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 			return nil, nil, err
 		}
 		prefix := fleetScratchPrefix(cfg.AllocID, cfg.Name)
+		// Runs after the release below (defers run last first): the task is in the store, or
+		// the volumes are gone.
+		defer scratch.Settle(prefix)
 		defer func() {
 			if !started {
 				if err := scratch.Release(context.Background(), prefix); err != nil {

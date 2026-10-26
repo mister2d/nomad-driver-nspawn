@@ -232,6 +232,10 @@ func (f *fakeCeph) Run(_ context.Context, name string, args ...string) ([]byte, 
 		fmt.Sscan(rest[2], &mb)
 		f.images[rest[len(rest)-1]] = mb << 20
 	case rest[0] == "image-meta" && rest[1] == "set":
+		if f.watchers[rest[2]] > 0 {
+			// krbd holds the exclusive lock (seen on prime).
+			return nil, fmt.Errorf("failed to set metadata: (30) Read-only file system")
+		}
 		if f.meta[rest[2]] == nil {
 			f.meta[rest[2]] = map[string]string{}
 		}
@@ -437,4 +441,35 @@ func mustJSON(t *testing.T, v interface{}) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func TestFleetScratchSweepSkipsInflight(t *testing.T) {
+	s, f, _ := newTestScratch(t)
+	s.startedAt = time.Now().Add(-time.Hour)
+	if err := s.Provision(context.Background(), testAlloc, "machine", "m", testVols, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	p := fleetScratchPrefix(testAlloc, "machine")
+	// Old tags, no live task, no machine: only the in-flight mark protects the start.
+	for _, v := range testVols {
+		f.meta[p+v.Name]["fleet.created"] = fmt.Sprint(time.Now().Add(-time.Hour).Unix())
+	}
+	s.Sweep(context.Background(), func(string) bool { return false })
+	if len(f.removed) != 0 {
+		t.Fatalf("swept an in-flight start: %v", f.removed)
+	}
+	s.Settle(p)
+	s.Sweep(context.Background(), func(string) bool { return false })
+	if len(f.removed) != 2 {
+		t.Fatalf("after settle: removed %v", f.removed)
+	}
+}
+
+func TestFleetScratchFailedStartSettles(t *testing.T) {
+	s, f, _ := newTestScratch(t)
+	f.failOn = "mkfs.ext4"
+	s.Provision(context.Background(), testAlloc, "machine", "m", testVols, func(string) {})
+	if s.isInflight(fleetScratchPrefix(testAlloc, "machine")) {
+		t.Fatal("a failed start stays in flight")
+	}
 }

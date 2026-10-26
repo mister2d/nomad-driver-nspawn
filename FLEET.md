@@ -161,8 +161,10 @@ Start, before nspawn runs:
 
 Before step 1 the driver releases old images of the same task (a restart
 after a host reboot finds them). A failure in any step releases what the start
-made. The start fails and Nomad reschedules. After the mount the driver stamps
-`fleet.created` again, so the sweeper grace starts after the slow steps.
+made. The start fails and Nomad reschedules. Tags are set before the map: after it
+the kernel holds the exclusive lock and `image-meta set` gets `EROFS`. A start
+in progress is marked in flight, and the sweeper skips it until the task is in
+the task store.
 
 Stop (DestroyTask): the driver waits until machined no longer lists the
 machine (30 s, then `machinectl terminate`). Then it unmounts, unmaps and
