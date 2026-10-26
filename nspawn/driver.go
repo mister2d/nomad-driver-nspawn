@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/consul-template/signals"
@@ -108,7 +109,7 @@ var (
 		"scratch": hclspec.NewBlockList("scratch", hclspec.NewObject(map[string]*hclspec.Spec{
 			"name": hclspec.NewAttr("name", "string", true),
 			"size": hclspec.NewAttr("size", "string", true),
-			"bind": hclspec.NewAttr("bind", "map(string)", true),
+			"bind": hclspec.NewAttr("bind", "list(map(string))", true),
 		})),
 		"store_lower_path": hclspec.NewAttr("store_lower_path", "string", false),
 		"toplevel":         hclspec.NewAttr("toplevel", "string", false),
@@ -198,8 +199,8 @@ type Driver struct {
 	// logger will log to the Nomad agent
 	logger hclog.Logger
 
-	// scratch is set when the plugin config has a scratch block.
-	scratch *fleetScratch
+	// scratch is set once by SetConfig when the plugin config has a scratch block.
+	scratchPtr atomic.Pointer[fleetScratch]
 }
 
 // Config is the driver configuration set by the SetConfig RPC call
@@ -283,9 +284,10 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 	if cfg.AgentConfig != nil {
 		d.nomadConfig = cfg.AgentConfig.Driver
 	}
-	if scratch != nil && d.scratch == nil {
-		d.scratch = scratch
-		d.scratch.StartSweeper(d.ctx, d.tasks.OwnsScratchPrefix)
+	// The scratch block is read once. A later change needs a plugin restart.
+	if scratch != nil && d.scratchPtr.CompareAndSwap(nil, scratch) {
+		scratch.StartHealth(d.ctx)
+		scratch.StartSweeper(d.ctx, d.tasks.OwnsScratchPrefix)
 	}
 
 	return nil
@@ -344,12 +346,12 @@ func (d *Driver) buildFingerprint() *drivers.Fingerprint {
 		attrs["driver.nspawn.version"] = pstructs.NewStringAttribute(systemdVersion)
 		attrs["driver.nspawn.volumes"] = pstructs.NewBoolAttribute(d.config.Volumes)
 		features := fleetFeaturesAttr()
-		if d.scratch != nil {
-			if err := d.scratch.Health(d.ctx); err != nil {
+		if sc := d.scratchPtr.Load(); sc != nil {
+			if err := sc.Health(); err != nil {
 				d.logger.Warn("scratch volumes are not available", "error", err)
 			} else {
 				features += ",scratch-rbd"
-				attrs["driver.nspawn.scratch.budget"] = pstructs.NewIntAttribute(d.scratch.budget, "B")
+				attrs["driver.nspawn.scratch.budget"] = pstructs.NewIntAttribute(sc.budget, "B")
 			}
 		}
 		attrs["driver.nspawn.features"] = pstructs.NewStringAttribute(features)
@@ -418,7 +420,10 @@ func (d *Driver) RecoverTask(handle *drivers.TaskHandle) error {
 		startedAt:    taskState.StartedAt,
 	}
 	var recovered MachineConfig
-	if err := handle.Config.DecodeDriverConfig(&recovered); err == nil {
+	if err := handle.Config.DecodeDriverConfig(&recovered); err != nil {
+		// The sweeper still releases the volumes after the task ends.
+		d.logger.Warn("RecoverTask: cannot decode the task config, scratch volumes go to the sweeper", "error", err)
+	} else {
 		h.usesScratch = len(recovered.Scratch) > 0
 	}
 
@@ -670,8 +675,9 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		}
 		d.logger.Debug("store root prepared", "root", rootDir, "toplevel", top)
 	}
+	scratch := d.scratchPtr.Load()
 	if len(driverConfig.Scratch) > 0 {
-		if d.scratch == nil {
+		if scratch == nil {
 			return nil, nil, fmt.Errorf("scratch volumes are not enabled on this node (plugin block scratch)")
 		}
 		emit := func(msg string) {
@@ -680,18 +686,18 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 				Timestamp: time.Now(), Message: msg,
 			})
 		}
-		if err := d.scratch.Provision(d.ctx, cfg.AllocID, cfg.Name, driverConfig.Machine, driverConfig.Scratch, emit); err != nil {
+		if err := scratch.Provision(d.ctx, cfg.AllocID, cfg.Name, driverConfig.Machine, driverConfig.Scratch, emit); err != nil {
 			return nil, nil, err
 		}
 		prefix := fleetScratchPrefix(cfg.AllocID, cfg.Name)
 		defer func() {
 			if !started {
-				if err := d.scratch.Release(context.Background(), prefix); err != nil {
+				if err := scratch.Release(context.Background(), prefix); err != nil {
 					d.logger.Error("scratch: release after a failed start", "error", err)
 				}
 			}
 		}()
-		driverConfig.scratchArgs = fleetScratchBindArgs(fleetScratchBinds(d.scratch.mountDir, prefix, driverConfig.Scratch))
+		driverConfig.scratchArgs = fleetScratchBindArgs(fleetScratchBinds(scratch.mountDir, prefix, driverConfig.Scratch))
 	}
 	if driverConfig.UnprivilegedPortStart >= 0 {
 		if err := fleetSetUnprivilegedPortStart(driverConfig.NetworkNamespace, int(driverConfig.UnprivilegedPortStart)); err != nil {
@@ -953,10 +959,10 @@ func (d *Driver) DestroyTask(taskID string, force bool) error {
 		handle.pluginClient.Kill()
 	}
 	// Scratch volumes. They are released only after the machine is gone.
-	if handle.usesScratch && d.scratch != nil && handle.taskConfig != nil {
+	if sc := d.scratchPtr.Load(); handle.usesScratch && sc != nil && handle.taskConfig != nil {
 		prefix := fleetScratchPrefix(handle.taskConfig.AllocID, handle.taskConfig.Name)
-		if d.scratch.WaitMachineGone(d.ctx, handle.machine.Name, 30*time.Second) {
-			if err := d.scratch.Release(d.ctx, prefix); err != nil {
+		if sc.WaitMachineGone(d.ctx, handle.machine.Name, 30*time.Second) {
+			if err := sc.Release(d.ctx, prefix); err != nil {
 				d.logger.Error("scratch: release failed. The sweeper retries", "prefix", prefix, "error", err)
 			}
 		} else {

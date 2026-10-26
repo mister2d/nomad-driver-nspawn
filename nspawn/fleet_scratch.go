@@ -18,6 +18,7 @@ import (
 	"time"
 
 	hclog "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/nomad/helper/pluginutils/hclutils"
 	"golang.org/x/sys/unix"
 )
 
@@ -59,6 +60,8 @@ var (
 	fleetScratchImageRe   = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{8}-[a-z][a-z0-9]{0,15}$`)
 	fleetBytesRe          = regexp.MustCompile(`^([1-9][0-9]*)([MGT])$`)
 	fleetCephNameRe       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	// Targets that the driver or Nomad binds. A scratch bind must not shadow them.
+	fleetScratchReservedTargets = []string{"/nix/store", "/alloc", "/local", "/secrets"}
 )
 
 // FleetScratchConfig is the plugin block scratch.
@@ -77,9 +80,9 @@ type FleetScratchConfig struct {
 
 // FleetScratchVolume is one task block scratch.
 type FleetScratchVolume struct {
-	Name string            `codec:"name"`
-	Size string            `codec:"size"`
-	Bind map[string]string `codec:"bind"`
+	Name string             `codec:"name"`
+	Size string             `codec:"size"`
+	Bind hclutils.MapStrStr `codec:"bind"`
 }
 
 // fleetParseBytes parses <n>M, <n>G or <n>T (binary units).
@@ -155,6 +158,14 @@ func fleetValidateScratch(c *MachineConfig) error {
 			return fmt.Errorf("scratch %q: bind is empty", v.Name)
 		}
 		for sub, target := range v.Bind {
+			if strings.ContainsAny(sub, ":,") || strings.ContainsAny(target, ":,") {
+				return fmt.Errorf("scratch %q: bind paths may not contain ':' or ','", v.Name)
+			}
+			for _, r := range fleetScratchReservedTargets {
+				if target == r || strings.HasPrefix(target, r+"/") {
+					return fmt.Errorf("scratch %q: bind target %q is reserved", v.Name, target)
+				}
+			}
 			if sub != "." && (filepath.IsAbs(sub) || filepath.Clean(sub) != sub || sub == ".." || strings.HasPrefix(sub, "../")) {
 				return fmt.Errorf("scratch %q: bind source %q must be \".\" or a clean relative path", v.Name, sub)
 			}
@@ -359,13 +370,32 @@ func (s *fleetScratch) images(ctx context.Context) ([]fleetRBDImage, error) {
 	return imgs, nil
 }
 
-// Health reports whether the key works. The result is cached.
-func (s *fleetScratch) Health(ctx context.Context) error {
+// Health returns the last health result. It never blocks on Ceph. Before the
+// first check it reports an error.
+func (s *fleetScratch) Health() error {
 	s.healthMu.Lock()
 	defer s.healthMu.Unlock()
-	if !s.healthAt.IsZero() && s.now().Sub(s.healthAt) < fleetScratchHealthTTL {
-		return s.healthErr
+	if s.healthAt.IsZero() {
+		return errors.New("scratch: first health check not done")
 	}
+	return s.healthErr
+}
+
+// StartHealth checks the key at once and then every fleetScratchHealthTTL.
+func (s *fleetScratch) StartHealth(ctx context.Context) {
+	go func() {
+		for {
+			s.checkHealth(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(fleetScratchHealthTTL):
+			}
+		}
+	}()
+}
+
+func (s *fleetScratch) checkHealth(ctx context.Context) {
 	err := func() error {
 		st, err := os.Stat(s.keyring)
 		if err != nil {
@@ -377,8 +407,9 @@ func (s *fleetScratch) Health(ctx context.Context) error {
 		_, err = s.rbd(ctx, 15*time.Second, s.scoped("ls")...)
 		return err
 	}()
+	s.healthMu.Lock()
 	s.healthAt, s.healthErr = s.now(), err
-	return err
+	s.healthMu.Unlock()
 }
 
 // Provision creates, maps, formats and mounts the volumes of one task. On
@@ -404,6 +435,12 @@ func (s *fleetScratch) provision(ctx context.Context, prefix, machine string, vo
 		}
 		sizes[i] = n
 		need += n
+	}
+
+	// A restart of the same task after a host reboot finds its old images (the mounts and
+	// mappings are gone). Release them first, so they neither collide nor count against the budget.
+	if err := s.Release(ctx, prefix); err != nil {
+		return fmt.Errorf("scratch: old volumes of this task are still in use: %v", err)
 	}
 
 	s.mu.Lock()
@@ -473,6 +510,13 @@ func (s *fleetScratch) provision(ctx context.Context, prefix, machine string, vo
 			}
 		}
 	}
+	// Stamp the time again. The sweeper grace then starts after the slow steps (map, mkfs).
+	now := strconv.FormatInt(s.now().Unix(), 10)
+	for _, v := range vols {
+		if _, err := s.rbd(ctx, 0, s.scoped("image-meta", "set", prefix+v.Name, "fleet.created", now)...); err != nil {
+			return fmt.Errorf("scratch: tag %s: %v", prefix+v.Name, err)
+		}
+	}
 	emit(fmt.Sprintf("scratch: mapped and mounted %d volumes", len(vols)))
 	return nil
 }
@@ -494,7 +538,11 @@ func (s *fleetScratch) WaitMachineGone(ctx context.Context, machine string, wait
 			if s.now().After(deadline) {
 				return false
 			}
-			time.Sleep(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
 	}
 	if poll(wait) {
@@ -634,12 +682,12 @@ func (s *fleetScratch) trash(ctx context.Context, image string) error {
 	return err
 }
 
-func (s *fleetScratch) imageMeta(ctx context.Context, image, key string) string {
+func (s *fleetScratch) imageMeta(ctx context.Context, image, key string) (string, error) {
 	out, err := s.rbd(ctx, 0, s.scoped("image-meta", "get", image, key)...)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(string(out)), nil
 }
 
 // Sweep releases every prefix that no live task owns. live reports whether a
@@ -649,6 +697,7 @@ func (s *fleetScratch) Sweep(ctx context.Context, live func(prefix string) bool)
 		return
 	}
 	cands := map[string]string{} // prefix -> one image name
+	inPool := map[string]bool{}
 	if ents, err := os.ReadDir(s.mountDir); err == nil {
 		for _, e := range ents {
 			if p := fleetScratchPrefixOf(e.Name()); p != "" {
@@ -672,17 +721,26 @@ func (s *fleetScratch) Sweep(ctx context.Context, live func(prefix string) bool)
 	for _, im := range imgs {
 		if p := fleetScratchPrefixOf(im.Image); p != "" {
 			cands[p] = im.Image
+			inPool[im.Image] = true
 		}
 	}
 	for p, img := range cands {
 		if live(p) {
 			continue
 		}
-		if created, err := strconv.ParseInt(s.imageMeta(ctx, img, "fleet.created"), 10, 64); err == nil &&
-			s.now().Sub(time.Unix(created, 0)) < s.sweepGrace {
-			continue
-		}
-		if m := s.imageMeta(ctx, img, "fleet.machine"); m != "" {
+		// An image in the pool must prove its age and its machine. Missing or unreadable tags (an rbd
+		// error, or a start between create and tag) keep it for the next pass. A prefix with only a
+		// mount or a device left (the image is already gone) needs no tags.
+		if inPool[img] {
+			c, err := s.imageMeta(ctx, img, "fleet.created")
+			created, perr := strconv.ParseInt(c, 10, 64)
+			if err != nil || perr != nil || s.now().Sub(time.Unix(created, 0)) < s.sweepGrace {
+				continue
+			}
+			m, err := s.imageMeta(ctx, img, "fleet.machine")
+			if err != nil || m == "" {
+				continue
+			}
 			if _, err := os.Lstat(filepath.Join(s.machinesDir, m)); err == nil {
 				s.logger.Warn("scratch sweep: machine of an orphan prefix still runs", "prefix", p, "machine", m)
 				continue

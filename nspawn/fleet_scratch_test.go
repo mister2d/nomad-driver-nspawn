@@ -2,6 +2,7 @@ package nspawn
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	hclog "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/nomad/helper/pluginutils/hclutils"
 )
 
 const testAlloc = "0b5c7a1e-2f3d-4c5b-8a9e-1d2c3b4a5f60"
@@ -72,6 +74,10 @@ func TestFleetValidateScratch(t *testing.T) {
 		"unclean":     scratchCfg(FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{"x/": "/a"}}),
 		"root target": scratchCfg(FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{".": "/"}}),
 		"rel target":  scratchCfg(FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{".": "a"}}),
+		"colon":       scratchCfg(FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{".": "/a:rootidmap"}}),
+		"comma":       scratchCfg(FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{"x,y": "/a"}}),
+		"store":       scratchCfg(FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{".": "/nix/store"}}),
+		"secrets":     scratchCfg(FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{".": "/secrets/x"}}),
 		"dup target":  scratchCfg(FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{".": "/a"}}, FleetScratchVolume{Name: "b", Size: "1G", Bind: map[string]string{".": "/a"}}),
 		"too many": scratchCfg(
 			FleetScratchVolume{Name: "a", Size: "1G", Bind: map[string]string{".": "/a"}},
@@ -375,6 +381,8 @@ func TestFleetScratchSweep(t *testing.T) {
 	f.meta[young+"sys"]["fleet.created"] = fmt.Sprint(time.Now().Unix())
 	os.WriteFile(filepath.Join(s.machinesDir, "m-"+running), nil, 0o644)
 	f.images["csi-vol-x"] = 1 << 30
+	untagged := fleetScratchPrefix("88888888-2222-3333-4444-555555555555", "machine")
+	f.images[untagged+"sys"] = 1 << 30 // created, not yet tagged
 
 	// Inside the grace period after plugin start nothing happens.
 	s.Sweep(context.Background(), func(p string) bool { return p == live })
@@ -386,4 +394,47 @@ func TestFleetScratchSweep(t *testing.T) {
 	if len(f.trashed) != 1 || f.trashed[0] != orphan+"sys" {
 		t.Fatalf("trashed %v", f.trashed)
 	}
+}
+
+func TestFleetScratchStaleImagesOfSameTask(t *testing.T) {
+	// After a host reboot the old images of the task are in the pool, without mounts or mappings.
+	s, f, _ := newTestScratch(t)
+	p := fleetScratchPrefix(testAlloc, "machine")
+	f.images[p+"sys"] = 40 << 30
+	f.images[p+"home"] = 20 << 30
+	f.images["other"] = 40 << 30 // 100G budget: 60 + 40 + 60 would exceed it without the release
+	if err := s.Provision(context.Background(), testAlloc, "machine", "m", testVols, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.trashed) != 2 || len(f.images) != 3 {
+		t.Fatalf("trashed %v images %v", f.trashed, f.images)
+	}
+}
+
+func TestFleetScratchTaskConfigDecode(t *testing.T) {
+	cfg := map[string]interface{}{
+		"image":     "/var/lib/machines/x",
+		"root_mode": "store",
+		"scratch": []interface{}{
+			map[string]interface{}{"name": "sys", "size": "40G",
+				"bind": []interface{}{map[string]interface{}{".": "/nix/.rw-store", "tmp": "/tmp"}}},
+			map[string]interface{}{"name": "home", "size": "20G",
+				"bind": []interface{}{map[string]interface{}{".": "/home"}}},
+		},
+		"store_lower_path": "/nix/.ro-store",
+	}
+	var c MachineConfig
+	hclutils.NewConfigParser(taskConfigSpec).ParseJson(t, mustJSON(t, map[string]interface{}{"Config": cfg}), &c)
+	if len(c.Scratch) != 2 || c.Scratch[0].Bind["tmp"] != "/tmp" || c.Scratch[1].Bind["."] != "/home" || c.StoreLowerPath != "/nix/.ro-store" {
+		t.Fatalf("decoded %+v", c)
+	}
+}
+
+func mustJSON(t *testing.T, v interface{}) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

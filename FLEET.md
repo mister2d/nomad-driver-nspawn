@@ -68,7 +68,7 @@ plugin "nomad-driver-nspawn" {
 | `toplevel` | string | Store mode only. The `/nix/store/<name>` toplevel to run. The default follows `/nix/var/nix/profiles/system` inside the image. |
 | `root_size` | string | Store mode only. Size of the tmpfs root, for example `256m` (default) or `1g`. |
 | `unprivileged_port_start` | number | Sets `net.ipv4.ip_unprivileged_port_start` in the group network namespace before start. -1 (default) leaves it. Needs bridge or cni networking. Use 0 to let sshd bind port 22 from inside a user namespace. |
-| `scratch` | block, repeatable | Store mode only. One RBD scratch volume for the life of the task: `name` (a-z0-9, 16 at most), `size` (`<n>M`, `<n>G` or `<n>T`, 1G to 1T), `bind` (map of a directory on the volume, `.` for its root, to a machine path). At most 4. See "Scratch volumes". |
+| `scratch` | block, repeatable | Store mode only. One RBD scratch volume for the life of the task: `name` (a-z0-9, 16 at most), `size` (`<n>M`, `<n>G` or `<n>T`, 1G to 1T), `bind` (list of maps, as the `bind` option: a directory on the volume, `.` for its root, to a machine path). Paths may not hold `:` or `,`. `/nix/store`, `/alloc`, `/local` and `/secrets` are reserved targets. At most 4. See "Scratch volumes". |
 | `store_lower_path` | string | Store mode only. A second idmapped read-only bind of the image store at this path below `/nix/`, for an overlay store in the machine. |
 | `hostname` | string | Becomes `--hostname`. Must be a DNS name of at most 64 characters. An unresolved `${...}` fails validation. Empty (default) keeps the nspawn default, the machine name. See "Hostname". |
 
@@ -140,12 +140,12 @@ volume that is created at placement and deleted at stop.
 scratch {
   name = "sys"
   size = "40G"
-  bind = { "." = "/nix/.rw-store", "var-nix" = "/nix/var/nix", "tmp" = "/tmp" }
+  bind = [{ "." = "/nix/.rw-store", "var-nix" = "/nix/var/nix", "tmp" = "/tmp" }]
 }
 scratch {
   name = "home"
   size = "20G"
-  bind = { "." = "/home" }
+  bind = [{ "." = "/home" }]
 }
 ```
 
@@ -160,8 +160,10 @@ Start, before nspawn runs:
 4. It creates each bind source directory. A `/tmp` or `/var/tmp` target gets
    mode 1777. nspawn binds each one with `:idmap`, parents first.
 
-A failure in any step releases what the start made. The start fails and
-Nomad reschedules.
+Before step 1 the driver releases old images of the same task (a restart
+after a host reboot finds them). A failure in any step releases what the start
+made. The start fails and Nomad reschedules. After the mount the driver stamps
+`fleet.created` again, so the sweeper grace starts after the slow steps.
 
 Stop (DestroyTask): the driver waits until machined no longer lists the
 machine (30 s, then `machinectl terminate`). Then it unmounts, unmaps and
@@ -173,7 +175,10 @@ Release works by name prefix, so it needs no saved state and is safe to run
 twice. The sweeper runs every `sweep_interval` after `sweep_grace` from plugin
 start, so RecoverTask runs first. It releases a prefix only when no task of
 the driver owns it, the image is older than `sweep_grace` and the machine in
-`fleet.machine` is gone. This collects volumes after a crash, a failed stop
+`fleet.machine` is gone. An image with missing or unreadable tags stays for the
+next pass. A background check runs `rbd ls` once a minute. The fingerprint
+reads only its last result, so a Ceph outage never blocks it. The plugin reads
+the `scratch` block once. A change needs a plugin restart. This collects volumes after a crash, a failed stop
 or a host reboot.
 
 The key must reach only the namespace of the node:
