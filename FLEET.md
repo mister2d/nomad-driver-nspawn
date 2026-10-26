@@ -14,7 +14,7 @@ this a machine next to a Connect sidecar fails with "Cannot assign environment v
 ## Feature attribute
 
 The fingerprint sets `driver.nspawn.features` to a sorted, comma separated
-list: `cpu-hard-limit, cpu-weight, env-names, exec-env, hostname,
+list: `address-families, cpu-hard-limit, cpu-weight, env-names, exec-env, hostname,
 load-credentials, portmap-bridge, scope-stats, store-lower, store-root,
 tasks-max, unprivileged-ports, userns-netns`. The list ends with
 `scratch-rbd` only when the plugin has a `scratch` block and its Ceph key
@@ -69,6 +69,7 @@ plugin "nomad-driver-nspawn" {
 | `unprivileged_port_start` | number | Sets `net.ipv4.ip_unprivileged_port_start` in the group network namespace before start. -1 (default) leaves it. Needs bridge or cni networking. Use 0 to let sshd bind port 22 from inside a user namespace. |
 | `scratch` | block, repeatable | Store mode only. One RBD scratch volume for the life of the task: `name` (a-z0-9, 16 at most), `size` (`<n>M`, `<n>G` or `<n>T`, 1G to 1T), `bind` (list of maps, as the `bind` option: a directory on the volume, `.` for its root, to a machine path). Paths may not hold `:` or `,`. `/nix/store`, `/alloc`, `/local` and `/secrets` are reserved targets. At most 4. See "Scratch volumes". |
 | `store_lower_path` | string | Store mode only. A second idmapped read-only bind of the image store at this path below `/nix/`, for an overlay store in the machine. |
+| `restrict_address_families` | list(string) | Becomes `--restrict-address-families=` with the entries joined by spaces. Each entry is `AF_<NAME>` (allow) or `~AF_<NAME>` (deny). `"none"` alone denies every family. Empty (default) passes nothing and keeps the nspawn default (no filter today, `AF_INET AF_INET6 AF_UNIX` in a future systemd). Needs systemd 261 or later. A NixOS machine needs `AF_NETLINK` as well (glibc `getifaddrs`, `ip`, systemd). |
 | `hostname` | string | Becomes `--hostname`. Must be a DNS name of at most 64 characters. An unresolved `${...}` fails validation. Empty (default) keeps the nspawn default, the machine name. See "Hostname". |
 
 ## Hostname

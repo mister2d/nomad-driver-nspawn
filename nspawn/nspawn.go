@@ -96,13 +96,14 @@ type MachineConfig struct {
 	LoadCredentials       hclutils.MapStrStr `codec:"load_credentials"`
 	SetCredentials        hclutils.MapStrStr `codec:"set_credentials"`
 	// loadCredentialArgs holds validated arguments built by StartTask.
-	loadCredentialArgs []string
-	ReadOnly           bool                 `codec:"read_only"`
-	RootMode           string               `codec:"root_mode"`
-	RootSize           string               `codec:"root_size"`
-	Scratch            []FleetScratchVolume `codec:"scratch"`
-	StoreLowerPath     string               `codec:"store_lower_path"`
-	Toplevel           string               `codec:"toplevel"`
+	loadCredentialArgs      []string
+	ReadOnly                bool                 `codec:"read_only"`
+	RestrictAddressFamilies []string             `codec:"restrict_address_families"`
+	RootMode                string               `codec:"root_mode"`
+	RootSize                string               `codec:"root_size"`
+	Scratch                 []FleetScratchVolume `codec:"scratch"`
+	StoreLowerPath          string               `codec:"store_lower_path"`
+	Toplevel                string               `codec:"toplevel"`
 	// UnprivilegedPortStart sets net.ipv4.ip_unprivileged_port_start in the
 	// group network namespace. -1 leaves the kernel value.
 	UnprivilegedPortStart int64  `codec:"unprivileged_port_start"`
@@ -200,6 +201,7 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 		args = append(args, "--machine", c.Machine)
 	}
 	args = append(args, fleetHostnameArgs(c.Hostname)...)
+	args = append(args, fleetAddrFamilyArgs(c.RestrictAddressFamilies)...)
 	if c.PivotRoot != "" {
 		args = append(args, "--pivot-root", c.PivotRoot)
 	}
@@ -270,6 +272,9 @@ func (c *MachineConfig) Validate() error {
 		return err
 	}
 	if err := fleetValidateScratch(c); err != nil {
+		return err
+	}
+	if err := fleetValidateAddrFamilies(c.RestrictAddressFamilies); err != nil {
 		return err
 	}
 	if c.Volatile != "" {

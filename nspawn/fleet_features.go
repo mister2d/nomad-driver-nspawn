@@ -6,6 +6,7 @@ import "strings"
 // sorted. Jobs can require one with the constraint
 // attr.driver.nspawn.features set_contains <name>.
 var fleetFeatures = []string{
+	"address-families",
 	"cpu-hard-limit",
 	"cpu-weight",
 	"env-names",
