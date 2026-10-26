@@ -132,16 +132,69 @@ func fleetResolveToplevel(image, toplevel string) (string, error) {
 
 // fleetStoreRootArgs returns the nspawn arguments for store mode. The root
 // directory comes first, the init last.
-func fleetStoreRootArgs(rootDir, image, toplevel string) (head, tail []string) {
+// lower is the store_lower_path option ("" for none). extra holds more
+// arguments (the scratch binds) that go before the init.
+func fleetStoreRootArgs(rootDir, image, toplevel, lower string, extra []string) (head, tail []string) {
 	head = []string{"-D", rootDir}
-	tail = []string{
-		"--bind-ro=" + filepath.Join(image, "nix/store") + ":/nix/store:idmap",
+	store := filepath.Join(image, "nix/store")
+	tail = []string{"--bind-ro=" + store + ":/nix/store:idmap"}
+	if lower != "" {
+		// A second view of the same store. The machine mounts an overlay on
+		// /nix/store with this as the lower layer.
+		tail = append(tail, "--bind-ro="+store+":"+lower+":idmap")
+	}
+	tail = append(tail, extra...)
+	tail = append(tail,
 		// Without --boot nspawn sends SIGKILL on stop. systemd as PID 1 needs
 		// SIGRTMIN+3 for a clean shutdown.
 		"--kill-signal=SIGRTMIN+3",
-		toplevel + "/init",
-	}
+		toplevel+"/init",
+	)
 	return head, tail
+}
+
+// fleetValidateStoreLower checks the store_lower_path option.
+func fleetValidateStoreLower(c *MachineConfig) error {
+	p := c.StoreLowerPath
+	if p == "" {
+		return nil
+	}
+	if c.RootMode != fleetRootModeStore {
+		return fmt.Errorf("store_lower_path needs root_mode = %q", fleetRootModeStore)
+	}
+	if !filepath.IsAbs(p) || filepath.Clean(p) != p || !strings.HasPrefix(p, "/nix/") ||
+		p == "/nix/store" || strings.HasPrefix(p, "/nix/store/") {
+		return fmt.Errorf("store_lower_path must be a clean path below /nix/ outside /nix/store")
+	}
+	return nil
+}
+
+// fleetMaxRegistrationSize caps the copy of the image registration.
+const fleetMaxRegistrationSize = 64 << 20
+
+// fleetCopyRegistration copies /nix-path-registration of the image to the
+// root. The image loads it into the Nix database at boot and removes it, as
+// on the first boot of a system tarball. A missing file is not an error.
+func fleetCopyRegistration(image, root string) error {
+	src := filepath.Join(image, "nix-path-registration")
+	st, err := os.Lstat(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", src)
+	}
+	if st.Size() > fleetMaxRegistrationSize {
+		return fmt.Errorf("%s is larger than %d bytes", src, fleetMaxRegistrationSize)
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(root, "nix-path-registration"), b, 0o644)
 }
 
 // fleetPrepareStoreRoot mounts the tmpfs root and creates the skeleton. A

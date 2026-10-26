@@ -97,10 +97,12 @@ type MachineConfig struct {
 	SetCredentials        hclutils.MapStrStr `codec:"set_credentials"`
 	// loadCredentialArgs holds validated arguments built by StartTask.
 	loadCredentialArgs []string
-	ReadOnly           bool   `codec:"read_only"`
-	RootMode           string `codec:"root_mode"`
-	RootSize           string `codec:"root_size"`
-	Toplevel           string `codec:"toplevel"`
+	ReadOnly           bool                 `codec:"read_only"`
+	RootMode           string               `codec:"root_mode"`
+	RootSize           string               `codec:"root_size"`
+	Scratch            []FleetScratchVolume `codec:"scratch"`
+	StoreLowerPath     string               `codec:"store_lower_path"`
+	Toplevel           string               `codec:"toplevel"`
 	// UnprivilegedPortStart sets net.ipv4.ip_unprivileged_port_start in the
 	// group network namespace. -1 leaves the kernel value.
 	UnprivilegedPortStart int64  `codec:"unprivileged_port_start"`
@@ -114,6 +116,8 @@ type MachineConfig struct {
 	// storeRootDir and toplevelPath are set by StartTask in store mode.
 	storeRootDir string `codec:"-"`
 	toplevelPath string `codec:"-"`
+	// scratchArgs holds the scratch bind arguments built by StartTask.
+	scratchArgs []string `codec:"-"`
 }
 
 type ImageType string
@@ -152,7 +156,7 @@ func (c *MachineConfig) ConfigArray() ([]string, error) {
 		if !imageStat.IsDir() || c.storeRootDir == "" || c.toplevelPath == "" {
 			return nil, fmt.Errorf("root_mode = %q needs a directory image and a prepared root", fleetRootModeStore)
 		}
-		args, storeTail = fleetStoreRootArgs(c.storeRootDir, c.imagePath, c.toplevelPath)
+		args, storeTail = fleetStoreRootArgs(c.storeRootDir, c.imagePath, c.toplevelPath, c.StoreLowerPath, c.scratchArgs)
 	} else {
 		imageType := "-i"
 		if imageStat.IsDir() {
@@ -260,6 +264,12 @@ func (c *MachineConfig) Validate() error {
 		return err
 	}
 	if err := fleetValidateHostname(c.Hostname); err != nil {
+		return err
+	}
+	if err := fleetValidateStoreLower(c); err != nil {
+		return err
+	}
+	if err := fleetValidateScratch(c); err != nil {
 		return err
 	}
 	if c.Volatile != "" {

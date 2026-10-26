@@ -31,3 +31,16 @@ func (ts *taskStore) Delete(id string) {
 	defer ts.lock.Unlock()
 	delete(ts.store, id)
 }
+
+// OwnsScratchPrefix reports whether a task in the store owns the scratch
+// image prefix.
+func (ts *taskStore) OwnsScratchPrefix(prefix string) bool {
+	ts.lock.RLock()
+	defer ts.lock.RUnlock()
+	for _, h := range ts.store {
+		if h.taskConfig != nil && fleetScratchPrefix(h.taskConfig.AllocID, h.taskConfig.Name) == prefix {
+			return true
+		}
+	}
+	return false
+}

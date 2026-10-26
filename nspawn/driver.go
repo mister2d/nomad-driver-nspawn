@@ -67,6 +67,19 @@ var (
 			hclspec.NewAttr("default_tasks_max", "number", false),
 			hclspec.NewLiteral("0"),
 		),
+		"scratch": hclspec.NewBlock("scratch", false,
+			hclspec.NewObject(map[string]*hclspec.Spec{
+				"pool":           hclspec.NewAttr("pool", "string", true),
+				"namespace":      hclspec.NewAttr("namespace", "string", true),
+				"client_id":      hclspec.NewAttr("client_id", "string", true),
+				"keyring":        hclspec.NewAttr("keyring", "string", true),
+				"budget":         hclspec.NewAttr("budget", "string", true),
+				"mount_dir":      hclspec.NewAttr("mount_dir", "string", false),
+				"trash_expiry":   hclspec.NewAttr("trash_expiry", "string", false),
+				"sweep_interval": hclspec.NewAttr("sweep_interval", "string", false),
+				"sweep_grace":    hclspec.NewAttr("sweep_grace", "string", false),
+				"op_timeout":     hclspec.NewAttr("op_timeout", "string", false),
+			})),
 	})
 
 	// taskConfigSpec is the hcl specification for the driver config section of
@@ -92,7 +105,13 @@ var (
 		"read_only":   hclspec.NewAttr("read_only", "bool", false),
 		"root_mode":   hclspec.NewAttr("root_mode", "string", false),
 		"root_size":   hclspec.NewAttr("root_size", "string", false),
-		"toplevel":    hclspec.NewAttr("toplevel", "string", false),
+		"scratch": hclspec.NewBlockList("scratch", hclspec.NewObject(map[string]*hclspec.Spec{
+			"name": hclspec.NewAttr("name", "string", true),
+			"size": hclspec.NewAttr("size", "string", true),
+			"bind": hclspec.NewAttr("bind", "map(string)", true),
+		})),
+		"store_lower_path": hclspec.NewAttr("store_lower_path", "string", false),
+		"toplevel":         hclspec.NewAttr("toplevel", "string", false),
 		"unprivileged_port_start": hclspec.NewDefault(
 			hclspec.NewAttr("unprivileged_port_start", "number", false),
 			hclspec.NewLiteral("-1"),
@@ -178,6 +197,9 @@ type Driver struct {
 
 	// logger will log to the Nomad agent
 	logger hclog.Logger
+
+	// scratch is set when the plugin config has a scratch block.
+	scratch *fleetScratch
 }
 
 // Config is the driver configuration set by the SetConfig RPC call
@@ -191,6 +213,8 @@ type Config struct {
 	// When above 0 it is also the ceiling for tasks_max.
 	// 0 leaves the systemd default.
 	DefaultTasksMax int64 `codec:"default_tasks_max"`
+	// Scratch enables per-task RBD scratch volumes. Nil turns them off.
+	Scratch *FleetScratchConfig `codec:"scratch"`
 }
 
 // defaultTasksMax returns the plugin default for TasksMax.
@@ -251,9 +275,17 @@ func (d *Driver) SetConfig(cfg *base.Config) error {
 		}
 	}
 
+	scratch, err := newFleetScratch(config.Scratch, d.logger)
+	if err != nil {
+		return err
+	}
 	d.config = &config
 	if cfg.AgentConfig != nil {
 		d.nomadConfig = cfg.AgentConfig.Driver
+	}
+	if scratch != nil && d.scratch == nil {
+		d.scratch = scratch
+		d.scratch.StartSweeper(d.ctx, d.tasks.OwnsScratchPrefix)
 	}
 
 	return nil
@@ -311,7 +343,16 @@ func (d *Driver) buildFingerprint() *drivers.Fingerprint {
 		attrs["driver.nspawn"] = pstructs.NewBoolAttribute(true)
 		attrs["driver.nspawn.version"] = pstructs.NewStringAttribute(systemdVersion)
 		attrs["driver.nspawn.volumes"] = pstructs.NewBoolAttribute(d.config.Volumes)
-		attrs["driver.nspawn.features"] = pstructs.NewStringAttribute(fleetFeaturesAttr())
+		features := fleetFeaturesAttr()
+		if d.scratch != nil {
+			if err := d.scratch.Health(d.ctx); err != nil {
+				d.logger.Warn("scratch volumes are not available", "error", err)
+			} else {
+				features += ",scratch-rbd"
+				attrs["driver.nspawn.scratch.budget"] = pstructs.NewIntAttribute(d.scratch.budget, "B")
+			}
+		}
+		attrs["driver.nspawn.features"] = pstructs.NewStringAttribute(features)
 	} else {
 		health = drivers.HealthStateUndetected
 		desc = "disabled"
@@ -375,6 +416,10 @@ func (d *Driver) RecoverTask(handle *drivers.TaskHandle) error {
 		taskConfig:   handle.Config,
 		procState:    drivers.TaskStateRunning,
 		startedAt:    taskState.StartedAt,
+	}
+	var recovered MachineConfig
+	if err := handle.Config.DecodeDriverConfig(&recovered); err == nil {
+		h.usesScratch = len(recovered.Scratch) > 0
 	}
 
 	d.tasks.Set(handle.Config.ID, h)
@@ -620,7 +665,33 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		}()
 		driverConfig.storeRootDir = rootDir
 		driverConfig.toplevelPath = top
+		if err := fleetCopyRegistration(imagePath, rootDir); err != nil {
+			return nil, nil, fmt.Errorf("failed to copy the store registration: %v", err)
+		}
 		d.logger.Debug("store root prepared", "root", rootDir, "toplevel", top)
+	}
+	if len(driverConfig.Scratch) > 0 {
+		if d.scratch == nil {
+			return nil, nil, fmt.Errorf("scratch volumes are not enabled on this node (plugin block scratch)")
+		}
+		emit := func(msg string) {
+			d.eventer.EmitEvent(&drivers.TaskEvent{
+				TaskID: cfg.ID, AllocID: cfg.AllocID, TaskName: cfg.Name,
+				Timestamp: time.Now(), Message: msg,
+			})
+		}
+		if err := d.scratch.Provision(d.ctx, cfg.AllocID, cfg.Name, driverConfig.Machine, driverConfig.Scratch, emit); err != nil {
+			return nil, nil, err
+		}
+		prefix := fleetScratchPrefix(cfg.AllocID, cfg.Name)
+		defer func() {
+			if !started {
+				if err := d.scratch.Release(context.Background(), prefix); err != nil {
+					d.logger.Error("scratch: release after a failed start", "error", err)
+				}
+			}
+		}()
+		driverConfig.scratchArgs = fleetScratchBindArgs(fleetScratchBinds(d.scratch.mountDir, prefix, driverConfig.Scratch))
 	}
 	if driverConfig.UnprivilegedPortStart >= 0 {
 		if err := fleetSetUnprivilegedPortStart(driverConfig.NetworkNamespace, int(driverConfig.UnprivilegedPortStart)); err != nil {
@@ -770,6 +841,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		taskConfig:   cfg,
 		procState:    drivers.TaskStateRunning,
 		startedAt:    time.Now().Round(time.Millisecond),
+		usesScratch:  len(driverConfig.Scratch) > 0,
 	}
 
 	driverState := TaskState{
@@ -879,6 +951,17 @@ func (d *Driver) DestroyTask(taskID string, force bool) error {
 
 	if !handle.pluginClient.Exited() {
 		handle.pluginClient.Kill()
+	}
+	// Scratch volumes. They are released only after the machine is gone.
+	if handle.usesScratch && d.scratch != nil && handle.taskConfig != nil {
+		prefix := fleetScratchPrefix(handle.taskConfig.AllocID, handle.taskConfig.Name)
+		if d.scratch.WaitMachineGone(d.ctx, handle.machine.Name, 30*time.Second) {
+			if err := d.scratch.Release(d.ctx, prefix); err != nil {
+				d.logger.Error("scratch: release failed. The sweeper retries", "prefix", prefix, "error", err)
+			}
+		} else {
+			d.logger.Error("scratch: the machine is still up. The sweeper releases the volumes later", "machine", handle.machine.Name)
+		}
 	}
 	// Store mode root. A no-op for image mode tasks.
 	if handle.taskConfig != nil {

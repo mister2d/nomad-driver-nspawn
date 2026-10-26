@@ -14,6 +14,7 @@ var fleetFeatures = []string{
 	"load-credentials",
 	"portmap-bridge",
 	"scope-stats",
+	"store-lower",
 	"store-root",
 	"tasks-max",
 	"unprivileged-ports",

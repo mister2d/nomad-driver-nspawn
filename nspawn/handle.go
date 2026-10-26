@@ -22,6 +22,8 @@ type taskHandle struct {
 	machine *MachineProps
 	logger  hclog.Logger
 	networkInterfaces []string
+	// usesScratch is set when the task has scratch volumes.
+	usesScratch bool
 
 	// stateLock syncs access to all fields below
 	stateLock sync.RWMutex
