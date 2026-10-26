@@ -195,8 +195,10 @@ type fakeCeph struct {
 	watchers map[string]int
 	calls    []string
 	failOn   string
-	nextDev  int
-	sysfs    string
+	// flakyLong makes this many rbd ls --long calls fail.
+	flakyLong int
+	nextDev   int
+	sysfs     string
 }
 
 func (f *fakeCeph) Run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -221,10 +223,21 @@ func (f *fakeCeph) Run(_ context.Context, name string, args ...string) ([]byte, 
 		return nil, nil
 	}
 	switch {
-	case rest[0] == "ls":
+	case rest[0] == "ls" && len(rest) > 1 && rest[1] == "--long":
+		if f.flakyLong > 0 {
+			// rbd ls --long opens each image and races a removal (seen on prime).
+			f.flakyLong--
+			return nil, fmt.Errorf("rbd: error opening x: (2) No such file or directory")
+		}
 		var parts []string
 		for n, s := range f.images {
 			parts = append(parts, fmt.Sprintf(`{"image":%q,"size":%d}`, n, s))
+		}
+		return []byte("[" + strings.Join(parts, ",") + "]"), nil
+	case rest[0] == "ls":
+		var parts []string
+		for n := range f.images {
+			parts = append(parts, fmt.Sprintf("%q", n))
 		}
 		return []byte("[" + strings.Join(parts, ",") + "]"), nil
 	case rest[0] == "create":
@@ -471,5 +484,21 @@ func TestFleetScratchFailedStartSettles(t *testing.T) {
 	s.Provision(context.Background(), testAlloc, "machine", "m", testVols, func(string) {})
 	if s.isInflight(fleetScratchPrefix(testAlloc, "machine")) {
 		t.Fatal("a failed start stays in flight")
+	}
+}
+
+func TestFleetScratchListRace(t *testing.T) {
+	s, f, _ := newTestScratch(t)
+	// Release never uses the listing that opens images.
+	f.flakyLong = 100
+	p := fleetScratchPrefix(testAlloc, "machine")
+	f.images[p+"sys"] = 1 << 30
+	if err := s.Release(context.Background(), p); err != nil || len(f.removed) != 1 {
+		t.Fatalf("release with a racing listing: %v, removed %v", err, f.removed)
+	}
+	// The budget listing retries.
+	f.flakyLong = 2
+	if err := s.Provision(context.Background(), testAlloc, "machine", "m", testVols, func(string) {}); err != nil {
+		t.Fatalf("provision with two failed listings: %v", err)
 	}
 }

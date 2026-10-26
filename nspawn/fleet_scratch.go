@@ -359,9 +359,23 @@ type fleetRBDImage struct {
 	Size  int64  `json:"size"`
 }
 
-// images lists the images in the namespace.
+// images lists the images in the namespace with their sizes. rbd ls --long
+// opens each image, so it fails with ENOENT when another task removes an
+// image during the listing (seen on prime with three stops at once). The
+// call is tried three times.
 func (s *fleetScratch) images(ctx context.Context) ([]fleetRBDImage, error) {
-	out, err := s.rbd(ctx, 0, s.scoped("ls", "--long", "--format", "json")...)
+	var out []byte
+	var err error
+	for i := 0; i < 3; i++ {
+		if out, err = s.rbd(ctx, 0, s.scoped("ls", "--long", "--format", "json")...); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(time.Second):
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +387,23 @@ func (s *fleetScratch) images(ctx context.Context) ([]fleetRBDImage, error) {
 		return nil, fmt.Errorf("rbd ls: %v", err)
 	}
 	return imgs, nil
+}
+
+// names lists the image names in the namespace. It opens no image, so a
+// concurrent removal cannot make it fail.
+func (s *fleetScratch) names(ctx context.Context) ([]string, error) {
+	out, err := s.rbd(ctx, 0, s.scoped("ls", "--format", "json")...)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(out, &names); err != nil {
+		return nil, fmt.Errorf("rbd ls: %v", err)
+	}
+	return names, nil
 }
 
 // Health returns the last health result. It never blocks on Ceph. Before the
@@ -632,20 +663,20 @@ func (s *fleetScratch) Release(ctx context.Context, prefix string) error {
 		}
 	}
 
-	imgs, err := s.images(ctx)
+	names, err := s.names(ctx)
 	if err != nil {
 		errs = append(errs, err.Error())
 	}
-	for _, im := range imgs {
-		if !strings.HasPrefix(im.Image, prefix) || !fleetScratchImageRe.MatchString(im.Image) || busy[im.Image] {
+	for _, name := range names {
+		if !strings.HasPrefix(name, prefix) || !fleetScratchImageRe.MatchString(name) || busy[name] {
 			continue
 		}
-		if n, err := s.watchers(ctx, im.Image); err != nil || n > 0 {
-			errs = append(errs, fmt.Sprintf("keep %s: %d watchers, %v", im.Image, n, err))
+		if n, err := s.watchers(ctx, name); err != nil || n > 0 {
+			errs = append(errs, fmt.Sprintf("keep %s: %d watchers, %v", name, n, err))
 			continue
 		}
-		if _, err := s.rbd(ctx, 0, s.scoped("rm", "--no-progress", im.Image)...); err != nil {
-			errs = append(errs, fmt.Sprintf("remove %s: %v", im.Image, err))
+		if _, err := s.rbd(ctx, 0, s.scoped("rm", "--no-progress", name)...); err != nil {
+			errs = append(errs, fmt.Sprintf("remove %s: %v", name, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -725,14 +756,14 @@ func (s *fleetScratch) Sweep(ctx context.Context, live func(prefix string) bool)
 			}
 		}
 	}
-	imgs, err := s.images(ctx)
+	names, err := s.names(ctx)
 	if err != nil {
 		s.logger.Warn("scratch sweep: list images", "error", err)
 	}
-	for _, im := range imgs {
-		if p := fleetScratchPrefixOf(im.Image); p != "" {
-			cands[p] = im.Image
-			inPool[im.Image] = true
+	for _, name := range names {
+		if p := fleetScratchPrefixOf(name); p != "" {
+			cands[p] = name
+			inPool[name] = true
 		}
 	}
 	for p, img := range cands {
