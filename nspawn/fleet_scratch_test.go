@@ -534,3 +534,40 @@ func TestFleetScratchCeilings(t *testing.T) {
 		t.Error("Provision above max_volumes: want an error")
 	}
 }
+
+// TestFleetScratchPluginConfigDecode decodes the plugin block that the fleet
+// NixOS module renders, with every scratch option set.
+func TestFleetScratchPluginConfigDecode(t *testing.T) {
+	hcl := `
+config {
+  enabled = true
+  volumes = false
+  default_tasks_max = 4096
+  cpu_hard_limit = false
+  scratch {
+    pool      = "sandbox-scratch"
+    namespace = "prime"
+    client_id = "nspawn.scratch.prime"
+    keyring   = "/etc/ceph/ceph.client.nspawn.scratch.prime.keyring"
+    budget    = "200G"
+    mount_dir       = "/run/nspawn-scratch"
+    sweep_interval  = "10m"
+    sweep_grace     = "15m"
+    op_timeout      = "60s"
+    max_volumes     = 4
+    max_volume_size = "1T"
+  }
+}`
+	var c Config
+	hclutils.NewConfigParser(configSpec).ParseHCL(t, hcl, &c)
+	if c.Scratch == nil || c.Scratch.MaxVolumes != 4 || c.Scratch.MaxVolumeSize != "1T" || c.Scratch.SweepGrace != "15m" || c.DefaultTasksMax != 4096 {
+		t.Fatalf("decoded %+v %+v", c, c.Scratch)
+	}
+	s, err := newFleetScratch(c.Scratch, hclog.NewNullLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.maxVolumes != 4 || s.maxVolumeSize != fleetScratchMaxSize || s.opTimeout != 60*time.Second {
+		t.Fatalf("scratch %+v", s)
+	}
+}
