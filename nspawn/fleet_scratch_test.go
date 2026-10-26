@@ -163,7 +163,7 @@ func TestNewFleetScratch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.budget != 200<<30 || s.mountDir != fleetScratchDefaultMountDir || s.trashExpiry != time.Hour {
+	if s.budget != 200<<30 || s.mountDir != fleetScratchDefaultMountDir {
 		t.Fatalf("defaults: %+v", s)
 	}
 	if s, _ := newFleetScratch(nil, nil); s != nil {
@@ -176,7 +176,7 @@ func TestNewFleetScratch(t *testing.T) {
 		"budget":   func(c *FleetScratchConfig) { c.Budget = "lots" },
 		"mount":    func(c *FleetScratchConfig) { c.MountDir = "/" },
 		"interval": func(c *FleetScratchConfig) { c.SweepInterval = "0s" },
-		"expiry":   func(c *FleetScratchConfig) { c.TrashExpiry = "-1h" },
+		"grace":    func(c *FleetScratchConfig) { c.SweepGrace = "-1h" },
 	} {
 		c := base
 		mut(&c)
@@ -191,7 +191,7 @@ type fakeCeph struct {
 	mu       sync.Mutex
 	images   map[string]int64
 	meta     map[string]map[string]string
-	trashed  []string
+	removed  []string
 	watchers map[string]int
 	calls    []string
 	failOn   string
@@ -261,10 +261,10 @@ func (f *fakeCeph) Run(_ context.Context, name string, args ...string) ([]byte, 
 	case rest[0] == "status":
 		n := f.watchers[rest[len(rest)-1]]
 		return []byte(fmt.Sprintf(`{"watchers":[%s]}`, strings.TrimSuffix(strings.Repeat(`{},`, n), ","))), nil
-	case rest[0] == "trash", rest[0] == "rm":
+	case rest[0] == "rm":
 		img := rest[len(rest)-1]
 		delete(f.images, img)
-		f.trashed = append(f.trashed, img)
+		f.removed = append(f.removed, img)
 	}
 	return nil, nil
 }
@@ -317,8 +317,8 @@ func TestFleetScratchLifecycle(t *testing.T) {
 	if err := s.Release(context.Background(), p); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.images) != 1 || len(mounted) != 0 || len(f.trashed) != 2 {
-		t.Fatalf("after release: images %v mounted %v trashed %v", f.images, mounted, f.trashed)
+	if len(f.images) != 1 || len(mounted) != 0 || len(f.removed) != 2 {
+		t.Fatalf("after release: images %v mounted %v removed %v", f.images, mounted, f.removed)
 	}
 	if err := s.Release(context.Background(), p); err != nil {
 		t.Fatalf("second release: %v", err)
@@ -362,8 +362,8 @@ func TestFleetScratchReleaseKeepsWatchedImage(t *testing.T) {
 	if err := s.Release(context.Background(), p); err == nil {
 		t.Fatal("want an error for a watched image")
 	}
-	if len(f.trashed) != 0 {
-		t.Fatalf("trashed a watched image: %v", f.trashed)
+	if len(f.removed) != 0 {
+		t.Fatalf("removed a watched image: %v", f.removed)
 	}
 }
 
@@ -386,13 +386,13 @@ func TestFleetScratchSweep(t *testing.T) {
 
 	// Inside the grace period after plugin start nothing happens.
 	s.Sweep(context.Background(), func(p string) bool { return p == live })
-	if len(f.trashed) != 0 {
-		t.Fatalf("swept during the grace period: %v", f.trashed)
+	if len(f.removed) != 0 {
+		t.Fatalf("swept during the grace period: %v", f.removed)
 	}
 	s.startedAt = time.Now().Add(-time.Hour)
 	s.Sweep(context.Background(), func(p string) bool { return p == live })
-	if len(f.trashed) != 1 || f.trashed[0] != orphan+"sys" {
-		t.Fatalf("trashed %v", f.trashed)
+	if len(f.removed) != 1 || f.removed[0] != orphan+"sys" {
+		t.Fatalf("removed %v", f.removed)
 	}
 }
 
@@ -406,8 +406,8 @@ func TestFleetScratchStaleImagesOfSameTask(t *testing.T) {
 	if err := s.Provision(context.Background(), testAlloc, "machine", "m", testVols, func(string) {}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.trashed) != 2 || len(f.images) != 3 {
-		t.Fatalf("trashed %v images %v", f.trashed, f.images)
+	if len(f.removed) != 2 || len(f.images) != 3 {
+		t.Fatalf("removed %v images %v", f.removed, f.images)
 	}
 }
 

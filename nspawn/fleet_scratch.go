@@ -27,9 +27,11 @@ import (
 // Each scratch volume is a thin RBD image that lives exactly as long as its
 // task. The driver creates, maps (krbd), formats (ext4) and mounts it on the
 // host before nspawn starts, and binds directories of it into the machine with
-// an ID mapping. After the machine is gone the driver unmounts and unmaps the
-// image and moves it to the RBD trash with an expiry. A trash purge schedule
-// on the pool removes it after that.
+// an ID mapping. After the machine is gone the driver unmounts, unmaps and
+// removes the image. It does not use the RBD trash: trashed images keep their
+// data but drop out of the budget count, and krbd writes hang (not fail) when
+// the pool quota is full (spike on prime, 2026-10-26). `rbd trash mv
+// --expires-at` also runs /bin/date, which NixOS does not have.
 //
 // Safety:
 //   - The cephx key of the node reaches one RBD namespace only. Image names
@@ -39,11 +41,11 @@ import (
 //   - Release works by name prefix and needs no saved state. The sweeper
 //     releases a prefix only when no task of this driver owns it, the machine
 //     is gone and the plugin has run longer than the grace period (so that
-//     RecoverTask has run). An image with a watcher is never trashed.
+//     RecoverTask has run). An image with a watcher is never removed. Ceph
+//     also refuses to remove an image with a watcher.
 
 const (
 	fleetScratchDefaultMountDir      = "/run/nspawn-scratch"
-	fleetScratchDefaultTrashExpiry   = time.Hour
 	fleetScratchDefaultSweepInterval = 10 * time.Minute
 	fleetScratchDefaultSweepGrace    = 15 * time.Minute
 	fleetScratchDefaultOpTimeout     = 60 * time.Second
@@ -72,7 +74,6 @@ type FleetScratchConfig struct {
 	Keyring       string `codec:"keyring"`
 	Budget        string `codec:"budget"`
 	MountDir      string `codec:"mount_dir"`
-	TrashExpiry   string `codec:"trash_expiry"`
 	SweepInterval string `codec:"sweep_interval"`
 	SweepGrace    string `codec:"sweep_grace"`
 	OpTimeout     string `codec:"op_timeout"`
@@ -248,7 +249,7 @@ func (fleetExecRunner) Run(ctx context.Context, name string, args ...string) ([]
 type fleetScratch struct {
 	pool, namespace, clientID, keyring, mountDir string
 	budget                                       int64
-	trashExpiry, sweepInterval, sweepGrace       time.Duration
+	sweepInterval, sweepGrace                    time.Duration
 	opTimeout                                    time.Duration
 
 	runner      fleetRunner
@@ -316,9 +317,6 @@ func newFleetScratch(c *FleetScratchConfig, logger hclog.Logger) (*fleetScratch,
 	}
 	if !filepath.IsAbs(s.mountDir) || filepath.Clean(s.mountDir) != s.mountDir || s.mountDir == "/" {
 		return nil, fmt.Errorf("scratch mount_dir must be a clean absolute path")
-	}
-	if s.trashExpiry, err = fleetDurationOr(c.TrashExpiry, fleetScratchDefaultTrashExpiry, true); err != nil {
-		return nil, fmt.Errorf("scratch trash_expiry: %v", err)
 	}
 	if s.sweepInterval, err = fleetDurationOr(c.SweepInterval, fleetScratchDefaultSweepInterval, false); err != nil {
 		return nil, fmt.Errorf("scratch sweep_interval: %v", err)
@@ -585,7 +583,7 @@ func (s *fleetScratch) devices() ([]fleetRBDDevice, error) {
 	return out, nil
 }
 
-// Release unmounts, unmaps and trashes every volume with the prefix. Each
+// Release unmounts, unmaps and removes every volume with the prefix. Each
 // step skips what is already gone, so a second call is safe. A volume that is
 // still busy stays for the sweeper.
 func (s *fleetScratch) Release(ctx context.Context, prefix string) error {
@@ -636,8 +634,8 @@ func (s *fleetScratch) Release(ctx context.Context, prefix string) error {
 			errs = append(errs, fmt.Sprintf("keep %s: %d watchers, %v", im.Image, n, err))
 			continue
 		}
-		if err := s.trash(ctx, im.Image); err != nil {
-			errs = append(errs, fmt.Sprintf("trash %s: %v", im.Image, err))
+		if _, err := s.rbd(ctx, 0, s.scoped("rm", "--no-progress", im.Image)...); err != nil {
+			errs = append(errs, fmt.Sprintf("remove %s: %v", im.Image, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -670,16 +668,6 @@ func (s *fleetScratch) watchers(ctx context.Context, image string) (int, error) 
 		return 0, fmt.Errorf("rbd status: %v", err)
 	}
 	return len(st.Watchers), nil
-}
-
-func (s *fleetScratch) trash(ctx context.Context, image string) error {
-	if s.trashExpiry == 0 {
-		_, err := s.rbd(ctx, 0, s.scoped("rm", "--no-progress", image)...)
-		return err
-	}
-	exp := s.now().Add(s.trashExpiry).UTC().Format("2006-01-02 15:04:05")
-	_, err := s.rbd(ctx, 0, s.scoped("trash", "mv", "--expires-at", exp, image)...)
-	return err
 }
 
 func (s *fleetScratch) imageMeta(ctx context.Context, image, key string) (string, error) {

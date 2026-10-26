@@ -46,7 +46,6 @@ plugin "nomad-driver-nspawn" {
       keyring   = "/etc/ceph/ceph.client.nspawn.scratch.prime.keyring"
       budget    = "200G"                  # total provisioned size on this node
       # mount_dir      = "/run/nspawn-scratch"
-      # trash_expiry   = "1h"   # "0s": remove at once instead of the trash
       # sweep_interval = "10m"
       # sweep_grace    = "15m"
       # op_timeout     = "60s"  # each rbd call
@@ -167,9 +166,15 @@ made. The start fails and Nomad reschedules. After the mount the driver stamps
 
 Stop (DestroyTask): the driver waits until machined no longer lists the
 machine (30 s, then `machinectl terminate`). Then it unmounts, unmaps and
-moves each image to the RBD trash with an expiry of `trash_expiry`. A trash
-purge schedule on the namespace removes it. An image with a watcher is never
-trashed.
+removes each image (`rbd rm`). An image with a watcher is never removed.
+The driver does not use the RBD trash. Trashed images keep their data outside
+the budget count, and `rbd trash mv --expires-at` runs `/bin/date`, which NixOS
+does not have.
+
+Keep the pool quota well above the sum of the node budgets. A krbd write to a
+pool at its quota blocks in the kernel (uninterruptible) until the quota rises.
+It does not return an error. The budget is what keeps a machine from reaching
+the quota.
 
 Release works by name prefix, so it needs no saved state and is safe to run
 twice. The sweeper runs every `sweep_interval` after `sweep_grace` from plugin

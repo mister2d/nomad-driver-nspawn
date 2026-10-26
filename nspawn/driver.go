@@ -76,7 +76,6 @@ var (
 				"keyring":        hclspec.NewAttr("keyring", "string", true),
 				"budget":         hclspec.NewAttr("budget", "string", true),
 				"mount_dir":      hclspec.NewAttr("mount_dir", "string", false),
-				"trash_expiry":   hclspec.NewAttr("trash_expiry", "string", false),
 				"sweep_interval": hclspec.NewAttr("sweep_interval", "string", false),
 				"sweep_grace":    hclspec.NewAttr("sweep_grace", "string", false),
 				"op_timeout":     hclspec.NewAttr("op_timeout", "string", false),
